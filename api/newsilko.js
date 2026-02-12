@@ -1,28 +1,38 @@
 // api/newsilko.js
 
-const REPLACEMENTS = [
-  ["오찬", "밥자리"],
-  ["회동", "만남"],
-  ["재고", "다시 생각"],
-  ["검토", "고민"],
-  ["논란", "사람들 시끄러움"],
-  ["촉구", "하라고 함"],
-  ["강조", "힘줘 말함"],
-  ["발표했다", "래"],
-  ["밝혔다", "래"],
-  ["말했다", "래"],
-];
-
-function catify(text) {
-  let t = String(text || "");
-  for (const [from, to] of REPLACEMENTS) t = t.split(from).join(to);
-  // 너무 길면 자르기
-  if (t.length > 70) t = t.slice(0, 70) + "…";
-  return t;
-}
-
 function stripHtml(s) {
   return String(s || "").replace(/<[^>]*>/g, "").trim();
+}
+
+function clamp(s, n) {
+  const t = String(s || "").replace(/\s+/g, " ").trim();
+  return t.length > n ? t.slice(0, n - 1) + "…" : t;
+}
+
+// 고양이 말투: "과장 없이, 짧게"
+function catLine(desc) {
+  const t = clamp(desc, 60);
+  // 너무 딱딱하면 어미만 살짝 바꿈
+  // (의미 왜곡 최소화)
+  const tweaks = [
+    [/했습니다\.$/g, "했대."],
+    [/했습니다$/g, "했대."],
+    [/밝혔습니다\.$/g, "라고 했대."],
+    [/밝혔습니다$/g, "라고 했대."],
+    [/이라고 했습니다\.$/g, "래."],
+    [/이라고 했습니다$/g, "래."],
+    [/라고 했습니다\.$/g, "래."],
+    [/라고 했습니다$/g, "래."],
+    [/입니다\.$/g, "래."],
+    [/입니다$/g, "래."],
+  ];
+
+  let out = t;
+  for (const [re, rep] of tweaks) out = out.replace(re, rep);
+
+  // 문장 끝이 딱 안 떨어지면 마침표 보정
+  if (!/[.!?…。]$/.test(out)) out += ".";
+  return out;
 }
 
 async function fetchNaverNews(query) {
@@ -57,14 +67,26 @@ async function fetchNaverNews(query) {
   };
 }
 
-function kakaoSimpleText(text) {
+// 카카오 응답: simpleText + basicCard 3개
+function kakaoResponse(headerText, cards) {
   return {
     version: "2.0",
     template: {
       outputs: [
-        {
-          simpleText: { text },
-        },
+        { simpleText: { text: headerText } },
+        ...cards.map((c) => ({
+          basicCard: {
+            title: c.title,
+            description: c.description,
+            buttons: [
+              {
+                action: "webLink",
+                label: "기사 보기",
+                webLinkUrl: c.link,
+              },
+            ],
+          },
+        })),
       ],
     },
   };
@@ -72,52 +94,63 @@ function kakaoSimpleText(text) {
 
 export default async function handler(req, res) {
   try {
-    // 키 없으면 친절하게 안내
     if (!process.env.NAVER_CLIENT_ID || !process.env.NAVER_CLIENT_SECRET) {
-      return res
-        .status(200)
-        .json(
-          kakaoSimpleText(
-            "🐱 일꼬가 열쇠를 못 찾았어…\nVercel 환경변수 NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 먼저 넣어줘!"
-          )
-        );
+      return res.status(200).json({
+        version: "2.0",
+        template: {
+          outputs: [
+            {
+              simpleText: {
+                text: "🐱 열쇠가 없어… Vercel 환경변수(NAVER_CLIENT_ID/SECRET)부터 확인해줘.",
+              },
+            },
+          ],
+        },
+      });
     }
 
-    // 3개 카테고리
-    const queries = ["정치", "사회", "연예"];
+    const queries = [
+      { label: "정치", q: "정치" },
+      { label: "사회", q: "사회" },
+      { label: "연예", q: "연예" },
+    ];
 
     const results = [];
-    for (const q of queries) {
-      const item = await fetchNaverNews(q);
-      if (item) results.push({ q, ...item });
+    for (const it of queries) {
+      const item = await fetchNaverNews(it.q);
+      if (item) results.push({ label: it.label, ...item });
     }
 
     if (results.length === 0) {
-      return res
-        .status(200)
-        .json(kakaoSimpleText("🐱 오늘은 뉴스 냄새가 안 나… 다시 불러줘."));
+      return res.status(200).json({
+        version: "2.0",
+        template: { outputs: [{ simpleText: { text: "🐱 오늘은 조용하네. 뉴스 냄새가 안 나." } }] },
+      });
     }
 
-    const lines = [];
-    lines.push("🐱 뉴스일꼬 — 오늘의 인간 소식");
-    lines.push("");
+    const header =
+      "🐱 뉴스일꼬 — 오늘의 인간 소식\n" +
+      "대충 세 줄로 가져왔어. (클릭하면 기사로 가.)";
 
-    results.forEach((n, idx) => {
-      lines.push(`${idx + 1}️⃣ (${n.q}) ${catify(n.title)}`);
-      if (n.link) lines.push(`🔗 ${n.link}`);
-      lines.push("");
-    });
+    const cards = results.map((n) => ({
+      title: `(${n.label}) ${clamp(n.title, 38)}`,
+      description: catLine(n.desc),
+      link: n.link,
+    }));
 
-    lines.push("끝. 나는 창가 간다냥.");
-
-    return res.status(200).json(kakaoSimpleText(lines.join("\n")));
+    return res.status(200).json(kakaoResponse(header, cards));
   } catch (e) {
-    return res
-      .status(200)
-      .json(
-        kakaoSimpleText(
-          `🐱 에러 났다냥…\n${e?.message || e}\n(잠깐 뒤에 다시 '뉴스줘' 해봐)`
-        )
-      );
+    return res.status(200).json({
+      version: "2.0",
+      template: {
+        outputs: [
+          {
+            simpleText: {
+              text: `🐱 에러났어…\n${e?.message || e}\n(잠깐 뒤에 다시 '뉴스줘' 해봐)`,
+            },
+          },
+        ],
+      },
+    });
   }
 }
