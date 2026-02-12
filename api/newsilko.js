@@ -52,6 +52,7 @@ async function fetchNaverNews(query) {
   };
 }
 
+// ----- 말투 튜닝 -----
 const NICK = [
   ["이재명", "재명이"],
   ["정청래", "청래"],
@@ -82,7 +83,8 @@ function slangify(text) {
     .replace(/검토/g, "고민")
     .replace(/재고/g, "다시 생각");
 
-  t = clamp(t, 110);
+  t = clamp(t, 95);
+
   if (!/[.!?]$/.test(t)) t += "!";
   t = t.replace(/!$/, "!!");
   return t;
@@ -97,6 +99,8 @@ function getUtterance(req) {
   );
 }
 
+// 유저가 “정치/사회/연예/부동산/주식 …” 같은 단어를 치면 그걸로 검색.
+// 기본은 속보.
 function pickQuery(utterance) {
   const u = String(utterance || "");
 
@@ -115,8 +119,31 @@ function pickQuery(utterance) {
   return "속보";
 }
 
-function kakaoSimple(text) {
-  return { simpleText: { text } };
+// ----- 카카오 응답 (카드 + 버튼만 느낌) -----
+// 카드 필드는 “빈 값”이면 가이드 위반 날 수 있음.
+// 그래서 title은 한 글자라도 넣고, description은 '.' 처럼 최소로.
+function kakaoResponse(oneLine, link) {
+  return {
+    version: "2.0",
+    template: {
+      outputs: [
+        { simpleText: { text: oneLine } },
+        {
+          basicCard: {
+            title: " ",
+            description: ".",
+            buttons: [
+              {
+                action: "webLink",
+                label: "기사보기",
+                webLinkUrl: link,
+              },
+            ],
+          },
+        },
+      ],
+    },
+  };
 }
 
 export default async function handler(req, res) {
@@ -126,9 +153,7 @@ export default async function handler(req, res) {
         version: "2.0",
         template: {
           outputs: [
-            kakaoSimple(
-              "🐱 열쇠가 없어…\nVercel 환경변수 NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 확인해줘."
-            ),
+            { simpleText: { text: "🐱 열쇠가 없어… Vercel 환경변수부터 확인해줘." } },
           ],
         },
       });
@@ -141,7 +166,7 @@ export default async function handler(req, res) {
     if (!item) {
       return res.status(200).json({
         version: "2.0",
-        template: { outputs: [kakaoSimple("🐱 오늘은 건질 게 없다… 다시 불러줘.")] },
+        template: { outputs: [{ simpleText: { text: "🐱 오늘은 건질 뉴스가 없다…" } }] },
       });
     }
 
@@ -150,30 +175,19 @@ export default async function handler(req, res) {
         ? item.title
         : `${item.title} ${item.desc}`.trim();
 
-    const line = slangify(raw);
+    const oneLine = slangify(raw);
 
-    // 링크는 깔끔하게 한 줄로만
-    const pretty = item.link
-      ? item.link.replace(/^https?:\/\//, "")
-      : "";
-
-    return res.status(200).json({
-      version: "2.0",
-      template: {
-        outputs: [
-          kakaoSimple(line),
-          kakaoSimple(`기사보기 👉 ${clamp(pretty, 70)}\n${item.link}`),
-        ],
-      },
-    });
+    return res.status(200).json(kakaoResponse(oneLine, item.link));
   } catch (e) {
     return res.status(200).json({
       version: "2.0",
       template: {
         outputs: [
-          kakaoSimple(
-            `🐱 에러났어…\n${e?.message || e}\n(잠깐 뒤에 다시 '뉴스줘' 해봐)`
-          ),
+          {
+            simpleText: {
+              text: `🐱 에러났어…\n${e?.message || e}`,
+            },
+          },
         ],
       },
     });
