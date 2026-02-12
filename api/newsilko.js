@@ -4,7 +4,6 @@ function stripHtml(s) {
   return String(s || "").replace(/<[^>]*>/g, "").trim();
 }
 
-// ✅ &quot; &#39; 같은 HTML 엔티티 디코딩
 function decodeEntities(str) {
   return String(str || "")
     .replace(/&quot;/g, '"')
@@ -17,9 +16,7 @@ function decodeEntities(str) {
 }
 
 function normalizeText(s) {
-  return decodeEntities(stripHtml(s))
-    .replace(/\s+/g, " ")
-    .trim();
+  return decodeEntities(stripHtml(s)).replace(/\s+/g, " ").trim();
 }
 
 function clamp(s, n) {
@@ -30,11 +27,7 @@ function clamp(s, n) {
 async function fetchNaverNews(query) {
   const url =
     "https://openapi.naver.com/v1/search/news.json?" +
-    new URLSearchParams({
-      query,
-      display: "1",
-      sort: "date",
-    }).toString();
+    new URLSearchParams({ query, display: "1", sort: "date" }).toString();
 
   const r = await fetch(url, {
     headers: {
@@ -59,7 +52,6 @@ async function fetchNaverNews(query) {
   };
 }
 
-// 닉네임/말투 (필요하면 계속 튜닝 가능)
 const NICK = [
   ["이재명", "재명이"],
   ["정청래", "청래"],
@@ -73,7 +65,6 @@ const NICK = [
 function slangify(text) {
   let t = normalizeText(text);
 
-  // 괄호류 제거(남아있으면 보기 지저분)
   t = t.replace(/\[[^\]]*\]/g, "");
   t = t.replace(/\([^)]+\)/g, "");
   t = t.replace(/\s+/g, " ").trim();
@@ -92,11 +83,8 @@ function slangify(text) {
     .replace(/재고/g, "다시 생각");
 
   t = clamp(t, 110);
-
-  // 끝맺음
   if (!/[.!?]$/.test(t)) t += "!";
   t = t.replace(/!$/, "!!");
-
   return t;
 }
 
@@ -124,30 +112,11 @@ function pickQuery(utterance) {
     .trim();
 
   if (cleaned.length >= 2) return cleaned;
-
   return "속보";
 }
 
-// ✅ 카카오 응답: simpleText만 2개 (가이드 위반 최소)
 function kakaoSimple(text) {
   return { simpleText: { text } };
-}
-
-function kakaoResponse(line, link) {
-  // 링크는 한 줄로만, 너무 길면 줄여서 표시(겉보기)
-  // 실제 링크는 그대로 들어가니까 클릭은 됨
-  const pretty = link
-    ? link.replace(/^https?:\/\//, "").slice(0, 45) + (link.length > 53 ? "…" : "")
-    : "";
-
-  const linkLine = link ? `기사보기 👉 ${pretty}\n(${link})` : "기사 링크가 없네…";
-
-  return {
-    version: "2.0",
-    template: {
-      outputs: [kakaoSimple(line), kakaoSimple(linkLine)],
-    },
-  };
 }
 
 export default async function handler(req, res) {
@@ -157,5 +126,56 @@ export default async function handler(req, res) {
         version: "2.0",
         template: {
           outputs: [
-            kakaoSimple("🐱 열쇠가 없어… Vercel 환경변수(NAVE
-::contentReference[oaicite:0]{index=0}
+            kakaoSimple(
+              "🐱 열쇠가 없어…\nVercel 환경변수 NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 확인해줘."
+            ),
+          ],
+        },
+      });
+    }
+
+    const utterance = getUtterance(req);
+    const query = pickQuery(utterance);
+
+    const item = await fetchNaverNews(query);
+    if (!item) {
+      return res.status(200).json({
+        version: "2.0",
+        template: { outputs: [kakaoSimple("🐱 오늘은 건질 게 없다… 다시 불러줘.")] },
+      });
+    }
+
+    const raw =
+      item.title && item.title.length >= 18
+        ? item.title
+        : `${item.title} ${item.desc}`.trim();
+
+    const line = slangify(raw);
+
+    // 링크는 깔끔하게 한 줄로만
+    const pretty = item.link
+      ? item.link.replace(/^https?:\/\//, "")
+      : "";
+
+    return res.status(200).json({
+      version: "2.0",
+      template: {
+        outputs: [
+          kakaoSimple(line),
+          kakaoSimple(`기사보기 👉 ${clamp(pretty, 70)}\n${item.link}`),
+        ],
+      },
+    });
+  } catch (e) {
+    return res.status(200).json({
+      version: "2.0",
+      template: {
+        outputs: [
+          kakaoSimple(
+            `🐱 에러났어…\n${e?.message || e}\n(잠깐 뒤에 다시 '뉴스줘' 해봐)`
+          ),
+        ],
+      },
+    });
+  }
+}
