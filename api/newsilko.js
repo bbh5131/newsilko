@@ -6,7 +6,6 @@ const THUMBNAIL_URL =
 function stripHtml(s) {
   return String(s || "").replace(/<[^>]*>/g, "").trim();
 }
-
 function decodeEntities(str) {
   return String(str || "")
     .replace(/&quot;/g, '"')
@@ -17,7 +16,6 @@ function decodeEntities(str) {
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">");
 }
-
 function clean(s) {
   return decodeEntities(stripHtml(s)).replace(/\s+/g, " ").trim();
 }
@@ -31,7 +29,6 @@ function getUtterance(req) {
   );
 }
 
-// 네이버 뉴스 1개 (제목만)
 async function fetchNaverNews(query) {
   const url =
     "https://openapi.naver.com/v1/search/news.json?" +
@@ -44,6 +41,11 @@ async function fetchNaverNews(query) {
     },
   });
 
+  if (!r.ok) {
+    const body = await r.text().catch(() => "");
+    throw new Error(`Naver ${r.status}: ${body.slice(0, 200)}`);
+  }
+
   const j = await r.json().catch(() => ({}));
   const item = j?.items?.[0];
   if (!item) return null;
@@ -51,14 +53,21 @@ async function fetchNaverNews(query) {
   return { title: clean(item.title), link: item.link };
 }
 
-// OpenAI: 제목 -> 구어체 1~2문장
-async function gptCasual(title) {
-  const key = process.env.OPENAI_API_KEY || "";
-  if (!key) throw new Error("OPENAI_API_KEY missing");
+function normalizeForCompare(s) {
+  return clean(s)
+    .replace(/[“”"']/g, "")
+    .replace(/\([^)]*\)/g, "")
+    .replace(/\[[^\]]*\]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-  // 카카오가 타임아웃 민감해서 3.5초 안에 끝내고, 안 끝나면 그냥 fallback
+async function callOpenAI(title, timeoutMs = 8000) {
+  const key = process.env.OPENAI_API_KEY || "";
+  if (!key) return { ok: false, text: "", why: "OPENAI_API_KEY 없음" };
+
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 3500);
+  const t = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -70,40 +79,72 @@ async function gptCasual(title) {
       },
       body: JSON.stringify({
         model: "gpt-4o-mini",
-        temperature: 0.8,
+        temperature: 0.9,
+        max_tokens: 120,
         messages: [
           {
             role: "system",
             content:
-              '너는 "뉴스일꼬"라는 고양이야. 뉴스 "제목"만 보고 친구한테 말하듯 아주 자연스러운 한국어 구어체로 1~2문장으로 바꿔. 어려운 단어/기자명/괄호태그/… 같은 말줄임표는 쓰지 마. 마지막에 "~대" "~했대" 느낌으로 마무리.',
+              '너는 "뉴스일꼬"라는 고양이야. 입력은 "뉴스 제목"이야. 출력은 친구한테 말하듯 자연스러운 한국어 구어체 1문장.\n규칙:\n- 분류(정치/사회) 같은 말 절대 넣지 마\n- 기자/매체/따옴표/괄호/대괄호/말줄임표(…) 금지\n- 어려운 단어는 쉬운 말로\n- 예: "전주에서 달리던 차에 불 났는데 다행히 사람은 안 다쳤대"\n- 45~80자 사이',
           },
           { role: "user", content: title },
         ],
       }),
     });
 
+    if (!r.ok) {
+      const body = await r.text().catch(() => "");
+      return { ok: false, text: "", why: `OpenAI ${r.status}: ${body.slice(0, 200)}` };
+    }
+
     const j = await r.json().catch(() => ({}));
-    const out = j?.choices?.[0]?.message?.content;
-    return clean(out || "");
+    const out = clean(j?.choices?.[0]?.message?.content || "");
+    if (!out) return { ok: false, text: "", why: "OpenAI 응답 비었음" };
+
+    return { ok: true, text: out, why: "" };
+  } catch (e) {
+    if (String(e?.name) === "AbortError") {
+      return { ok: false, text: "", why: `OpenAI 타임아웃(${timeoutMs}ms)` };
+    }
+    return { ok: false, text: "", why: `OpenAI 호출 오류: ${String(e).slice(0, 200)}` };
   } finally {
-    clearTimeout(timeout);
+    clearTimeout(t);
   }
 }
 
-function kakaoOk(casualText, link) {
+async function makeCasual(title) {
+  // 1차 시도
+  const a = await callOpenAI(title, 8000);
+
+  if (!a.ok) return a;
+
+  // 제목이랑 너무 비슷하면(거의 복붙) 2차로 더 강하게 재요청
+  const t0 = normalizeForCompare(title);
+  const t1 = normalizeForCompare(a.text);
+
+  const tooSimilar = t1 && t0 && (t1 === t0 || t1.includes(t0) || t0.includes(t1));
+  if (!tooSimilar) return a;
+
+  const b = await callOpenAI(
+    `제목을 그대로 쓰지 말고, 내용을 풀어서 말해줘: ${title}`,
+    8000
+  );
+
+  return b.ok ? b : a;
+}
+
+function kakaoCard(text, link) {
   return {
     version: "2.0",
     template: {
       outputs: [
-        { simpleText: { text: casualText } },
+        { simpleText: { text } },
         {
           basicCard: {
-            thumbnail: { imageUrl: THUMBNAIL_URL },
+            thumbnail: { imageUrl: THUMBNAIL_URL }, // ✅ 외부 URL이라 401 안 남
             title: "기사 보고 싶으면 눌러",
             description: "",
-            buttons: [
-              { action: "webLink", label: "기사보기", webLinkUrl: link },
-            ],
+            buttons: [{ action: "webLink", label: "기사보기", webLinkUrl: link }],
           },
         },
       ],
@@ -111,7 +152,7 @@ function kakaoOk(casualText, link) {
   };
 }
 
-function kakaoFail(msg) {
+function kakaoText(msg) {
   return {
     version: "2.0",
     template: { outputs: [{ simpleText: { text: msg } }] },
@@ -122,20 +163,21 @@ export default async function handler(req, res) {
   try {
     const q = getUtterance(req);
     const item = await fetchNaverNews(q);
-    if (!item) return res.status(200).json(kakaoFail("😿 오늘은 뉴스가 안 잡힌다… 다시 한번!"));
+    if (!item) return res.status(200).json(kakaoText("😿 뉴스가 안 잡혀… 다시 한 번!"));
 
-    // GPT가 늦거나 에러나면 제목으로라도 답 보내기
-    let casual = "";
-    try {
-      casual = await gptCasual(item.title);
-    } catch (e) {
-      casual = item.title; // fallback
+    const g = await makeCasual(item.title);
+
+    if (!g.ok) {
+      // ✅ 실패 이유를 Vercel 로그에 남김 (카톡엔 너무 자세히 안 보여줌)
+      console.error("[OPENAI_FAIL]", g.why);
+      return res
+        .status(200)
+        .json(kakaoCard(`😿 말투 변환이 막혔어…(지금은 제목으로 보낼게)\n${item.title}`, item.link));
     }
 
-    if (!casual) casual = item.title;
-
-    return res.status(200).json(kakaoOk(casual, item.link));
+    return res.status(200).json(kakaoCard(g.text, item.link));
   } catch (e) {
-    return res.status(200).json(kakaoFail("😿 지금 일꼬가 잠깐 멍 때렸어… 다시!"));
+    console.error("[NEWSILKO_ERR]", e);
+    return res.status(200).json(kakaoText("😿 일꼬가 잠깐 멈췄어… 다시!"));
   }
 }
