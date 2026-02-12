@@ -27,20 +27,33 @@ function clamp(s, n) {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
-// 기사 특수기호 제거
-function cleanNews(s) {
+function removeJunk(s) {
   let t = normalize(s);
+
+  // 특수기호/말줄임표
   t = t.replace(/[▲■◆●▶▷★☆]/g, "");
   t = t.replace(/\u2026/g, "");
-  t = t.replace(/\.{3,}/g, "");
+  t = t.replace(/\.{2,}/g, ""); // ".." "..." 제거
+  t = t.replace(/\s*-\s*/g, " ");
+  t = t.replace(/\s*\|\s*/g, " ");
+
+  // 대괄호/괄호 덩어리
   t = t.replace(/\[[^\]]*\]/g, "");
   t = t.replace(/\([^)]+\)/g, "");
-  t = t.replace(/\s*-\s*/g, " ");
-  return t.replace(/\s+/g, " ").trim();
+
+  // 매체/기자 패턴 제거
+  t = t.replace(/\|[^|]{1,40}기자\|/g, "");
+  t = t.replace(/[^ ]{1,15}\s*기자/g, "");
+
+  // 따옴표/군더더기
+  t = t.replace(/[“”"']/g, "");
+  t = t.replace(/\s+/g, " ").trim();
+
+  return t;
 }
 
-// ---------- fetch ----------
-async function fetchNews(query) {
+// ---------- fetch (제목만 사용) ----------
+async function fetchNewsTitleOnly(query) {
   const url =
     "https://openapi.naver.com/v1/search/news.json?" +
     new URLSearchParams({ query, display: "1", sort: "date" }).toString();
@@ -59,41 +72,45 @@ async function fetchNews(query) {
   if (!item) return null;
 
   return {
-    title: cleanNews(item.title),
-    desc: cleanNews(item.description),
+    title: removeJunk(item.title), // ✅ 제목만
     link: item.link,
   };
 }
 
-// ---------- 말투 ----------
-function friendify(title, desc) {
-  let main = title.replace(/美/g, "미국");
-  main = clamp(main, 70);
+// ---------- 말투 (제목만으로 자연스럽게) ----------
+function titleToChat(title) {
+  let t = removeJunk(title);
 
-  let sub = desc
-    .replace(/밝혔다/g, "그랬대")
-    .replace(/말했다/g, "그랬대")
-    .replace(/전했다/g, "그랬대")
-    .replace(/진단이 제기됐다/g, "는 말이 나왔대")
-    .replace(/전망이다/g, "같대")
-    .replace(/주목해야 한다/g, "지켜봐야 한대");
+  // 약어 한글화(원하면 더 추가 가능)
+  t = t.replace(/美/g, "미국").replace(/日/g, "일본").replace(/中/g, "중국");
 
-  sub = clamp(sub, 60);
+  // 너무 딱딱한 단어 완화
+  t = t
+    .replace(/오찬/g, "밥")
+    .replace(/회동/g, "만남")
+    .replace(/재고/g, "다시 생각")
+    .replace(/검토/g, "고민")
+    .replace(/촉구/g, "하라고 함")
+    .replace(/강조/g, "힘줘 말함");
 
+  t = clamp(t, 70);
+
+  // 제목을 “사람이 말하는 문장”으로 바꿔주는 고정 템플릿
+  // 1줄만 너무 건조하면 2줄로 나눔
   const tails = [
-    "아무튼 그렇대.",
-    "대충 이런 분위기래.",
     "이래.",
-    "그렇다네.",
+    "그렇대.",
+    "요즘 이런 분위기래.",
+    "아무튼 그렇대.",
     "암튼 그럼.",
   ];
   const tail = tails[Math.floor(Math.random() * tails.length)];
 
-  if (sub.length > 15) {
-    return `${main}. ${sub}. ${tail}`;
-  } else {
-    return `${main}. ${tail}`;
-  }
+  // 문장 끝 보정
+  const line1 = `${t}래.`;
+  const line2 = tail;
+
+  return `${line1}\n${line2}`;
 }
 
 // ---------- helpers ----------
@@ -105,6 +122,7 @@ function pickQuery(u) {
 
   const cleaned = u
     .replace(/뉴스줘/g, "")
+    .replace(/오늘뉴스/g, "")
     .replace(/뉴스일꼬/g, "")
     .trim();
 
@@ -135,8 +153,8 @@ export default async function handler(req, res) {
       "";
 
     const query = pickQuery(utterance);
+    const item = await fetchNewsTitleOnly(query);
 
-    const item = await fetchNews(query);
     if (!item) {
       return res.status(200).json({
         version: "2.0",
@@ -146,7 +164,7 @@ export default async function handler(req, res) {
       });
     }
 
-    const line = friendify(item.title, item.desc);
+    const line = titleToChat(item.title);
 
     return res.status(200).json({
       version: "2.0",
