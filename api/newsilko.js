@@ -3,6 +3,7 @@
 const THUMBNAIL_URL =
   "https://upload.wikimedia.org/wikipedia/commons/7/7e/CatB4SVG.png";
 
+// ---------- util ----------
 function stripHtml(s) {
   return String(s || "").replace(/<[^>]*>/g, "").trim();
 }
@@ -18,21 +19,27 @@ function decodeEntities(str) {
     .replace(/&gt;/g, ">");
 }
 
-function cleanText(s) {
-  let t = decodeEntities(stripHtml(s));
-  t = t.replace(/[▲■◆●▶▷★☆]/g, "");
-  t = t.replace(/\u2026/g, "");
-  t = t.replace(/\.{3,}/g, "");
-  t = t.replace(/\s*-\s*/g, " ");
-  t = t.replace(/\[[^\]]*\]/g, "");
-  t = t.replace(/\([^)]+\)/g, "");
-  return t.replace(/\s+/g, " ").trim();
+function normalize(s) {
+  return decodeEntities(stripHtml(s)).replace(/\s+/g, " ").trim();
 }
 
 function clamp(s, n) {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
+// 기사 특수기호 제거
+function cleanNews(s) {
+  let t = normalize(s);
+  t = t.replace(/[▲■◆●▶▷★☆]/g, "");
+  t = t.replace(/\u2026/g, "");
+  t = t.replace(/\.{3,}/g, "");
+  t = t.replace(/\[[^\]]*\]/g, "");
+  t = t.replace(/\([^)]+\)/g, "");
+  t = t.replace(/\s*-\s*/g, " ");
+  return t.replace(/\s+/g, " ").trim();
+}
+
+// ---------- fetch ----------
 async function fetchNews(query) {
   const url =
     "https://openapi.naver.com/v1/search/news.json?" +
@@ -52,40 +59,51 @@ async function fetchNews(query) {
   if (!item) return null;
 
   return {
-    title: cleanText(item.title),
-    desc: cleanText(item.description),
+    title: cleanNews(item.title),
+    desc: cleanNews(item.description),
     link: item.link,
   };
 }
 
-// 자연스러운 말투 생성 (과하지 않게)
+// ---------- 말투 ----------
 function friendify(title, desc) {
-  let topic = title.replace(/美/g, "미국");
-  topic = clamp(topic, 60);
+  let main = title.replace(/美/g, "미국");
+  main = clamp(main, 70);
 
-  let gist = desc
+  let sub = desc
     .replace(/밝혔다/g, "그랬대")
     .replace(/말했다/g, "그랬대")
     .replace(/전했다/g, "그랬대")
     .replace(/진단이 제기됐다/g, "는 말이 나왔대")
-    .replace(/전망이다/g, "같대");
+    .replace(/전망이다/g, "같대")
+    .replace(/주목해야 한다/g, "지켜봐야 한대");
 
-  gist = clamp(gist, 60);
+  sub = clamp(sub, 60);
 
-  if (!gist || gist.length < 10) {
-    return `${topic}래!!`;
+  const tails = [
+    "아무튼 그렇대.",
+    "대충 이런 분위기래.",
+    "이래.",
+    "그렇다네.",
+    "암튼 그럼.",
+  ];
+  const tail = tails[Math.floor(Math.random() * tails.length)];
+
+  if (sub.length > 15) {
+    return `${main}. ${sub}. ${tail}`;
+  } else {
+    return `${main}. ${tail}`;
   }
-
-  return `${topic} 얘긴데, ${gist}래!!`;
 }
 
-function pickQuery(utterance) {
-  if (!utterance) return "속보";
-  if (utterance.includes("연예")) return "연예";
-  if (utterance.includes("사회")) return "사회";
-  if (utterance.includes("정치")) return "정치";
+// ---------- helpers ----------
+function pickQuery(u) {
+  if (!u) return "속보";
+  if (u.includes("연예")) return "연예";
+  if (u.includes("사회")) return "사회";
+  if (u.includes("정치")) return "정치";
 
-  const cleaned = utterance
+  const cleaned = u
     .replace(/뉴스줘/g, "")
     .replace(/뉴스일꼬/g, "")
     .trim();
@@ -93,6 +111,7 @@ function pickQuery(utterance) {
   return cleaned.length >= 2 ? cleaned : "속보";
 }
 
+// ---------- handler ----------
 export default async function handler(req, res) {
   try {
     if (!process.env.NAVER_CLIENT_ID || !process.env.NAVER_CLIENT_SECRET) {
@@ -102,7 +121,7 @@ export default async function handler(req, res) {
           outputs: [
             {
               simpleText: {
-                text: "🐱 네이버 API 키가 없어. 환경변수부터 확인해줘.",
+                text: "🐱 네이버 API 키 없어… Vercel 환경변수부터 확인해줘.",
               },
             },
           ],
@@ -122,20 +141,18 @@ export default async function handler(req, res) {
       return res.status(200).json({
         version: "2.0",
         template: {
-          outputs: [
-            { simpleText: { text: "🐱 오늘은 건질 뉴스가 없다…" } },
-          ],
+          outputs: [{ simpleText: { text: "🐱 오늘은 건질 뉴스가 없다…" } }],
         },
       });
     }
 
-    const oneLine = friendify(item.title, item.desc);
+    const line = friendify(item.title, item.desc);
 
     return res.status(200).json({
       version: "2.0",
       template: {
         outputs: [
-          { simpleText: { text: oneLine } },
+          { simpleText: { text: line } },
           {
             basicCard: {
               thumbnail: { imageUrl: THUMBNAIL_URL },
@@ -160,7 +177,7 @@ export default async function handler(req, res) {
         outputs: [
           {
             simpleText: {
-              text: "🐱 뉴스 불러오다 에러났다. 잠깐 뒤에 다시 해봐.",
+              text: "🐱 뉴스 불러오다 에러났다… 잠깐 뒤에 다시 해봐.",
             },
           },
         ],
