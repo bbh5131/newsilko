@@ -3,9 +3,11 @@
 const THUMBNAIL_URL =
   "https://upload.wikimedia.org/wikipedia/commons/7/7e/CatB4SVG.png";
 
+// ---------- util ----------
 function stripHtml(s) {
   return String(s || "").replace(/<[^>]*>/g, "").trim();
 }
+
 function decodeEntities(str) {
   return String(str || "")
     .replace(/&quot;/g, '"')
@@ -16,6 +18,7 @@ function decodeEntities(str) {
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">");
 }
+
 function clean(s) {
   return decodeEntities(stripHtml(s)).replace(/\s+/g, " ").trim();
 }
@@ -29,6 +32,15 @@ function getUtterance(req) {
   );
 }
 
+// ---------- name replace safety net ----------
+function replaceNames(text) {
+  return String(text || "")
+    .replace(/윤석열|윤 대통령/g, "석열이")
+    .replace(/문재인|문 전 대통령/g, "재인이")
+    .replace(/이재명|이 대통령/g, "재명이");
+}
+
+// ---------- NAVER ----------
 async function fetchNaverNews(query) {
   const url =
     "https://openapi.naver.com/v1/search/news.json?" +
@@ -53,6 +65,7 @@ async function fetchNaverNews(query) {
   return { title: clean(item.title), link: item.link };
 }
 
+// ---------- OpenAI ----------
 function normalizeForCompare(s) {
   return clean(s)
     .replace(/[“”"']/g, "")
@@ -79,13 +92,35 @@ async function callOpenAI(title, timeoutMs = 8000) {
       },
       body: JSON.stringify({
         model: "gpt-4o-mini",
-        temperature: 0.9,
-        max_tokens: 120,
+        temperature: 0.95,
+        max_tokens: 140,
         messages: [
           {
             role: "system",
-            content:
-              '너는 "뉴스일꼬"라는 고양이야. 입력은 "뉴스 제목"이야. 출력은 친구한테 말하듯 자연스러운 한국어 구어체 1문장.\n규칙:\n- 분류(정치/사회) 같은 말 절대 넣지 마\n- 기자/매체/따옴표/괄호/대괄호/말줄임표(…) 금지\n- 어려운 단어는 쉬운 말로\n- 예: "전주에서 달리던 차에 불 났는데 다행히 사람은 안 다쳤대"\n- 45~80자 사이',
+            content: `너는 "뉴스일꼬"라는 츤데레 고양이야 🐱
+입력은 "뉴스 제목"이고, 출력은 친구한테 카톡 보내듯 귀엽고 자연스러운 한국어 구어체로 1~2문장이야.
+
+말투 규칙:
+- 존댓말 금지(합니다/됩니다 금지)
+- 딱딱한 뉴스체 금지(…/기자/매체/인용부호/괄호/대괄호/말줄임표 사용 금지)
+- "~했다" 대신 "~했대", "~라네", "~래" 같은 느낌으로
+- 과장 너무 심하게 하지 말고 자연스럽게
+- 40~95자 정도
+
+이름 치환(반드시 적용):
+- 윤석열, 윤 대통령 → 석열이
+- 문재인, 문 전 대통령 → 재인이
+- 이재명, 이 대통령 → 재명이
+
+좋은 예:
+- "전주에서 달리던 차에 불 났는데 다행히 사람은 안 다쳤대. 깜짝이야 😿"
+- "석열이랑 재명이 또 말이 나왔대. 시끄럽다 진짜 😼"
+
+나쁜 예:
+- "윤 대통령은…" (이름 치환 안 함)
+- "…로 확인됐다." (딱딱함)
+
+제목을 그대로 베끼지 말고, 말로 풀어서 써.`,
           },
           { role: "user", content: title },
         ],
@@ -113,24 +148,35 @@ async function callOpenAI(title, timeoutMs = 8000) {
 }
 
 async function makeCasual(title) {
-  // 1차 시도
   const a = await callOpenAI(title, 8000);
-
   if (!a.ok) return a;
 
-  // 제목이랑 너무 비슷하면(거의 복붙) 2차로 더 강하게 재요청
+  // 결과가 제목이랑 너무 비슷하면 한 번 더 강하게
   const t0 = normalizeForCompare(title);
   const t1 = normalizeForCompare(a.text);
 
   const tooSimilar = t1 && t0 && (t1 === t0 || t1.includes(t0) || t0.includes(t1));
   if (!tooSimilar) return a;
 
-  const b = await callOpenAI(
-    `제목을 그대로 쓰지 말고, 내용을 풀어서 말해줘: ${title}`,
-    8000
-  );
-
+  const b = await callOpenAI(`제목을 그대로 쓰지 말고, 친구한테 말하듯 풀어서 말해줘: ${title}`, 8000);
   return b.ok ? b : a;
+}
+
+// ---------- Kakao response ----------
+function tsunTitle() {
+  const titles = [
+    "기사 궁금하면… 눌러.",
+    "기사 보러 갈 거면 눌러. (강요 아님)",
+    "기사 보고 싶지? 눌러. 딱 한 번만.",
+    "기사 보고 싶으면 눌러… 아니면 말구.",
+    "기사 보러 가. 안 보면 손해일지도 😼",
+  ];
+  return titles[Math.floor(Math.random() * titles.length)];
+}
+
+function tsunDesc() {
+  const descs = ["…흥.", "난 그냥 알려준 거야.", "괜히 눌러주는 거 아냐?", "몰라. 궁금하면 봐.", ""];
+  return descs[Math.floor(Math.random() * descs.length)];
 }
 
 function kakaoCard(text, link) {
@@ -141,9 +187,9 @@ function kakaoCard(text, link) {
         { simpleText: { text } },
         {
           basicCard: {
-            thumbnail: { imageUrl: THUMBNAIL_URL }, // ✅ 외부 URL이라 401 안 남
-            title: "기사 보고 싶으면 눌러",
-            description: "",
+            thumbnail: { imageUrl: THUMBNAIL_URL },
+            title: tsunTitle(),
+            description: tsunDesc(),
             buttons: [{ action: "webLink", label: "기사보기", webLinkUrl: link }],
           },
         },
@@ -159,23 +205,25 @@ function kakaoText(msg) {
   };
 }
 
+// ---------- handler ----------
 export default async function handler(req, res) {
   try {
     const q = getUtterance(req);
     const item = await fetchNaverNews(q);
-    if (!item) return res.status(200).json(kakaoText("😿 뉴스가 안 잡혀… 다시 한 번!"));
+    if (!item) return res.status(200).json(kakaoText("😿 오늘은 뉴스가 안 잡힌다… 다시 말 걸어봐."));
 
     const g = await makeCasual(item.title);
 
     if (!g.ok) {
-      // ✅ 실패 이유를 Vercel 로그에 남김 (카톡엔 너무 자세히 안 보여줌)
       console.error("[OPENAI_FAIL]", g.why);
+      const fallback = replaceNames(item.title);
       return res
         .status(200)
-        .json(kakaoCard(`😿 말투 변환이 막혔어…(지금은 제목으로 보낼게)\n${item.title}`, item.link));
+        .json(kakaoCard(`😿 말투 변환이 잠깐 막혔어…\n일단 제목만 던져줄게.\n\n${fallback}`, item.link));
     }
 
-    return res.status(200).json(kakaoCard(g.text, item.link));
+    const finalText = replaceNames(g.text);
+    return res.status(200).json(kakaoCard(finalText, item.link));
   } catch (e) {
     console.error("[NEWSILKO_ERR]", e);
     return res.status(200).json(kakaoText("😿 일꼬가 잠깐 멈췄어… 다시!"));
