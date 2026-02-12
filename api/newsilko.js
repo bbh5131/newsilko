@@ -24,6 +24,27 @@ function clamp(s, n) {
   return t.length > n ? t.slice(0, n - 1) + "…" : t;
 }
 
+// ✅ 기사에 섞이는 잡기호/말줄임표 정리
+function cleanNewsText(s) {
+  let t = normalizeText(s);
+
+  // 흔한 기호 제거
+  t = t.replace(/[▲■◆●▶▷★☆]/g, "");
+  // 유니코드 말줄임(…)과 점 3개(...) 제거
+  t = t.replace(/\u2026/g, "");
+  t = t.replace(/\.{3,}/g, "");
+  // 제목에서 흔한 구분자 완화
+  t = t.replace(/\s*-\s*/g, " ");
+  t = t.replace(/\s*\|\s*/g, " ");
+  t = t.replace(/\s+/g, " ").trim();
+
+  // 대괄호/괄호 덩어리 제거
+  t = t.replace(/\[[^\]]*\]/g, "");
+  t = t.replace(/\([^)]+\)/g, "");
+
+  return t.replace(/\s+/g, " ").trim();
+}
+
 async function fetchNaverNews(query) {
   const url =
     "https://openapi.naver.com/v1/search/news.json?" +
@@ -46,19 +67,18 @@ async function fetchNaverNews(query) {
   if (!item) return null;
 
   return {
-    title: normalizeText(item.title),
+    title: cleanNewsText(item.title),
     link: item.link,
-    desc: normalizeText(item.description),
+    desc: cleanNewsText(item.description),
   };
 }
 
 // --- 말투/별명 ---
+// (너무 비하처럼 보이지 않게 “~이” 정도만)
 const NICK = [
   ["이재명", "재명이"],
   ["정청래", "청래"],
   ["장동혁", "동혁이"],
-  ["한동훈", "동훈이"],
-  ["윤석열", "석열이"],
 ];
 
 function applyNick(s) {
@@ -67,88 +87,40 @@ function applyNick(s) {
   return t;
 }
 
-// 문장을 “친구가 말하듯” 템플릿으로 변환
+// ✅ “읽을 수 있는 한 줄” 생성: 제목 + 요약을 ‘대화체’로 재구성
 function friendify(title, desc) {
-  const T = applyNick(normalizeText(title));
-  const D = applyNick(normalizeText(desc));
+  const T = applyNick(cleanNewsText(title));
+  const D = applyNick(cleanNewsText(desc));
 
-  // 1) 제목 기반으로 핵심만 남기기(괄호/따옴표 제거)
-  let core = T
-    .replace(/\[[^\]]*\]/g, "")
-    .replace(/\([^)]+\)/g, "")
-    .replace(/[“”"']/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  // 제목이 너무 딱딱하면 부드럽게
+  let topic = T
+    .replace(/美/g, "미국")
+    .replace(/日/g, "일본")
+    .replace(/中/g, "중국");
 
-  // 2) 너무 기자문체면 톤만 부드럽게
-  core = core
+  // 설명은 “무슨 얘기냐” 한 문장으로만
+  let gist = D
     .replace(/밝혔다/g, "그랬대")
     .replace(/말했다/g, "그랬대")
     .replace(/전했다/g, "그랬대")
-    .replace(/검토/g, "고민")
-    .replace(/재고/g, "다시 생각")
-    .replace(/오찬/g, "밥")
-    .replace(/회동/g, "만남")
-    .replace(/취소/g, "캔슬");
+    .replace(/진단이 제기됐다/g, "는 말이 나왔대")
+    .replace(/주목해야 한다/g, "지켜봐야 한대")
+    .replace(/전망이다/g, "같대");
 
-  // 3) 제목이 애매/짧으면 설명에서 한 조각 끌어오기
-  let extra = D
-    .replace(/\[[^\]]*\]/g, "")
-    .replace(/\([^)]+\)/g, "")
-    .replace(/[“”"']/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  topic = clamp(topic, 58);
+  gist = clamp(gist, 62);
 
-  extra = extra
-    .replace(/밝혔다/g, "그랬대")
-    .replace(/말했다/g, "그랬대")
-    .replace(/전했다/g, "그랬대");
-
-  let line = core;
-  if (line.length < 18 && extra.length > 0) {
-    line = `${core}… 아무튼 ${extra}`;
+  // gist가 너무 빈약하면 topic만으로 처리
+  let line;
+  if (gist.length < 12) {
+    line = `${topic}래!!`;
+  } else {
+    line = `${topic} 얘긴데, ${gist}래!!`;
   }
 
-  // 4) “너가 원한 느낌”으로 한 번 더 다듬기(과하지 않게)
-  // 예: “A가 B한테 ~하자고 했는데, 주변에서 말렸다!”
-  line = line
-    .replace(/의사를 밝혔다/g, "할지 말지 고민 중이래")
-    .replace(/거부했다/g, "안 한대")
-    .replace(/제안했다/g, "하자고 했대")
-    .replace(/요청했다/g, "해달라 했대");
-
-  line = clamp(line, 95);
-
-  // 끝맺음
-  if (!/[.!?]$/.test(line)) line += "!";
-  line = line.replace(/!$/, "!!");
-
-  // 5) 진짜 “대화체 한 줄” 느낌 내는 마무리 꼬리표(너무 과하면 빼도 됨)
-  const tails = ["…그렇다네", "…이런 분위기래", "…대충 이렇대", "…암튼 그럼"];
-  const tail = tails[Math.floor(Math.random() * tails.length)];
-  return clamp(`${line} ${tail}`, 110);
-}
-
-// --- 카카오 응답(카드 + 버튼) ---
-// 점(.) 대신 문장 넣기
-function kakaoResponse(oneLine, link) {
-  return {
-    version: "2.0",
-    template: {
-      outputs: [
-        { simpleText: { text: oneLine } },
-        {
-          basicCard: {
-            title: "기사 보고 싶으면",
-            description: "눌러라. 내가 대신 읽어줬잖아 😼",
-            buttons: [
-              { action: "webLink", label: "기사보기", webLinkUrl: link },
-            ],
-          },
-        },
-      ],
-    },
-  };
+  // 마지막 군더더기 제거/정리
+  line = line.replace(/\s+/g, " ").trim();
+  return clamp(line, 110);
 }
 
 function getUtterance(req) {
@@ -160,8 +132,10 @@ function getUtterance(req) {
   );
 }
 
+// 유저가 키워드를 주면 그걸로 검색. 기본은 속보.
 function pickQuery(utterance) {
   const u = String(utterance || "");
+
   if (u.includes("연예")) return "연예";
   if (u.includes("사회")) return "사회";
   if (u.includes("정치")) return "정치";
@@ -171,12 +145,34 @@ function pickQuery(utterance) {
     .replace(/오늘뉴스/g, "")
     .replace(/뉴스일꼬/g, "")
     .replace(/일꼬야/g, "")
-    .replace(/뉴수/g, "")
-    .replace(/뉴우스/g, "")
     .trim();
 
   if (cleaned.length >= 2) return cleaned;
   return "속보";
+}
+
+// ✅ 카카오 응답: simpleText 1개 + basicCard 1개(기사보기 버튼)
+// ⚠️ 오류(2461) 방지: thumbnail.imageUrl 반드시 포함
+const THUMBNAIL_URL =
+  "https://upload.wikimedia.org/wikipedia/commons/7/7e/CatB4SVG.png"; // CC0 cat icon
+
+function kakaoResponse(oneLine, link) {
+  return {
+    version: "2.0",
+    template: {
+      outputs: [
+        { simpleText: { text: oneLine } },
+        {
+          basicCard: {
+            thumbnail: { imageUrl: THUMBNAIL_URL },
+            title: "기사 보고 싶으면",
+            description: "눌러라 😼",
+            buttons: [{ action: "webLink", label: "기사보기", webLinkUrl: link }],
+          },
+        },
+      ],
+    },
+  };
 }
 
 export default async function handler(req, res) {
@@ -186,7 +182,7 @@ export default async function handler(req, res) {
         version: "2.0",
         template: {
           outputs: [
-            {
+            {https://github.com/bbh5131/newsilko/blob/main/api/newsilko.js
               simpleText: {
                 text: "🐱 열쇠가 없어… Vercel 환경변수(NAVER_CLIENT_ID/SECRET)부터 확인해줘.",
               },
@@ -203,9 +199,7 @@ export default async function handler(req, res) {
     if (!item) {
       return res.status(200).json({
         version: "2.0",
-        template: {
-          outputs: [{ simpleText: { text: "🐱 오늘은 건질 뉴스가 없다…" } }],
-        },
+        template: { outputs: [{ simpleText: { text: "🐱 오늘은 건질 뉴스가 없다…" } }] },
       });
     }
 
@@ -215,9 +209,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       version: "2.0",
       template: {
-        outputs: [
-          { simpleText: { text: `🐱 에러났어…\n${e?.message || e}` } },
-        ],
+        outputs: [{ simpleText: { text: `🐱 에러났어…\n${e?.message || e}` } }],
       },
     });
   }
