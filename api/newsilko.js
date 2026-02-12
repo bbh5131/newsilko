@@ -171,6 +171,8 @@ function pickQuery(utterance) {
     .replace(/오늘뉴스/g, "")
     .replace(/뉴스일꼬/g, "")
     .replace(/일꼬야/g, "")
+    .replace(/뉴수/g, "")
+    .replace(/뉴우스/g, "")
     .trim();
 
   if (cleaned.length >= 2) return cleaned;
