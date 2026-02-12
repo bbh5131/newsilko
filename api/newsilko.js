@@ -52,42 +52,103 @@ async function fetchNaverNews(query) {
   };
 }
 
-// ----- 말투 튜닝 -----
+// --- 말투/별명 ---
 const NICK = [
   ["이재명", "재명이"],
   ["정청래", "청래"],
   ["장동혁", "동혁이"],
-  ["대통령", ""],
-  ["대표", ""],
-  ["의원", ""],
-  ["위원장", ""],
+  ["한동훈", "동훈이"],
+  ["윤석열", "석열이"],
 ];
 
-function slangify(text) {
-  let t = normalizeText(text);
-
-  t = t.replace(/\[[^\]]*\]/g, "");
-  t = t.replace(/\([^)]+\)/g, "");
-  t = t.replace(/\s+/g, " ").trim();
-
+function applyNick(s) {
+  let t = String(s || "");
   for (const [from, to] of NICK) t = t.split(from).join(to);
+  return t;
+}
 
-  t = t
-    .replace(/오찬/g, "밥")
-    .replace(/회동/g, "만남")
+// 문장을 “친구가 말하듯” 템플릿으로 변환
+function friendify(title, desc) {
+  const T = applyNick(normalizeText(title));
+  const D = applyNick(normalizeText(desc));
+
+  // 1) 제목 기반으로 핵심만 남기기(괄호/따옴표 제거)
+  let core = T
+    .replace(/\[[^\]]*\]/g, "")
+    .replace(/\([^)]+\)/g, "")
+    .replace(/[“”"']/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // 2) 너무 기자문체면 톤만 부드럽게
+  core = core
     .replace(/밝혔다/g, "그랬대")
     .replace(/말했다/g, "그랬대")
     .replace(/전했다/g, "그랬대")
-    .replace(/취소했다/g, "취소했대")
-    .replace(/거부했다/g, "안 한대")
     .replace(/검토/g, "고민")
-    .replace(/재고/g, "다시 생각");
+    .replace(/재고/g, "다시 생각")
+    .replace(/오찬/g, "밥")
+    .replace(/회동/g, "만남")
+    .replace(/취소/g, "캔슬");
 
-  t = clamp(t, 95);
+  // 3) 제목이 애매/짧으면 설명에서 한 조각 끌어오기
+  let extra = D
+    .replace(/\[[^\]]*\]/g, "")
+    .replace(/\([^)]+\)/g, "")
+    .replace(/[“”"']/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  if (!/[.!?]$/.test(t)) t += "!";
-  t = t.replace(/!$/, "!!");
-  return t;
+  extra = extra
+    .replace(/밝혔다/g, "그랬대")
+    .replace(/말했다/g, "그랬대")
+    .replace(/전했다/g, "그랬대");
+
+  let line = core;
+  if (line.length < 18 && extra.length > 0) {
+    line = `${core}… 아무튼 ${extra}`;
+  }
+
+  // 4) “너가 원한 느낌”으로 한 번 더 다듬기(과하지 않게)
+  // 예: “A가 B한테 ~하자고 했는데, 주변에서 말렸다!”
+  line = line
+    .replace(/의사를 밝혔다/g, "할지 말지 고민 중이래")
+    .replace(/거부했다/g, "안 한대")
+    .replace(/제안했다/g, "하자고 했대")
+    .replace(/요청했다/g, "해달라 했대");
+
+  line = clamp(line, 95);
+
+  // 끝맺음
+  if (!/[.!?]$/.test(line)) line += "!";
+  line = line.replace(/!$/, "!!");
+
+  // 5) 진짜 “대화체 한 줄” 느낌 내는 마무리 꼬리표(너무 과하면 빼도 됨)
+  const tails = ["…그렇다네", "…이런 분위기래", "…대충 이렇대", "…암튼 그럼"];
+  const tail = tails[Math.floor(Math.random() * tails.length)];
+  return clamp(`${line} ${tail}`, 110);
+}
+
+// --- 카카오 응답(카드 + 버튼) ---
+// 점(.) 대신 문장 넣기
+function kakaoResponse(oneLine, link) {
+  return {
+    version: "2.0",
+    template: {
+      outputs: [
+        { simpleText: { text: oneLine } },
+        {
+          basicCard: {
+            title: "기사 보고 싶으면",
+            description: "눌러라. 내가 대신 읽어줬잖아 😼",
+            buttons: [
+              { action: "webLink", label: "기사보기", webLinkUrl: link },
+            ],
+          },
+        },
+      ],
+    },
+  };
 }
 
 function getUtterance(req) {
@@ -99,11 +160,8 @@ function getUtterance(req) {
   );
 }
 
-// 유저가 “정치/사회/연예/부동산/주식 …” 같은 단어를 치면 그걸로 검색.
-// 기본은 속보.
 function pickQuery(utterance) {
   const u = String(utterance || "");
-
   if (u.includes("연예")) return "연예";
   if (u.includes("사회")) return "사회";
   if (u.includes("정치")) return "정치";
@@ -119,33 +177,6 @@ function pickQuery(utterance) {
   return "속보";
 }
 
-// ----- 카카오 응답 (카드 + 버튼만 느낌) -----
-// 카드 필드는 “빈 값”이면 가이드 위반 날 수 있음.
-// 그래서 title은 한 글자라도 넣고, description은 '.' 처럼 최소로.
-function kakaoResponse(oneLine, link) {
-  return {
-    version: "2.0",
-    template: {
-      outputs: [
-        { simpleText: { text: oneLine } },
-        {
-          basicCard: {
-            title: " ",
-            description: ".",
-            buttons: [
-              {
-                action: "webLink",
-                label: "기사보기",
-                webLinkUrl: link,
-              },
-            ],
-          },
-        },
-      ],
-    },
-  };
-}
-
 export default async function handler(req, res) {
   try {
     if (!process.env.NAVER_CLIENT_ID || !process.env.NAVER_CLIENT_SECRET) {
@@ -153,7 +184,11 @@ export default async function handler(req, res) {
         version: "2.0",
         template: {
           outputs: [
-            { simpleText: { text: "🐱 열쇠가 없어… Vercel 환경변수부터 확인해줘." } },
+            {
+              simpleText: {
+                text: "🐱 열쇠가 없어… Vercel 환경변수(NAVER_CLIENT_ID/SECRET)부터 확인해줘.",
+              },
+            },
           ],
         },
       });
@@ -166,28 +201,20 @@ export default async function handler(req, res) {
     if (!item) {
       return res.status(200).json({
         version: "2.0",
-        template: { outputs: [{ simpleText: { text: "🐱 오늘은 건질 뉴스가 없다…" } }] },
+        template: {
+          outputs: [{ simpleText: { text: "🐱 오늘은 건질 뉴스가 없다…" } }],
+        },
       });
     }
 
-    const raw =
-      item.title && item.title.length >= 18
-        ? item.title
-        : `${item.title} ${item.desc}`.trim();
-
-    const oneLine = slangify(raw);
-
+    const oneLine = friendify(item.title, item.desc);
     return res.status(200).json(kakaoResponse(oneLine, item.link));
   } catch (e) {
     return res.status(200).json({
       version: "2.0",
       template: {
         outputs: [
-          {
-            simpleText: {
-              text: `🐱 에러났어…\n${e?.message || e}`,
-            },
-          },
+          { simpleText: { text: `🐱 에러났어…\n${e?.message || e}` } },
         ],
       },
     });
