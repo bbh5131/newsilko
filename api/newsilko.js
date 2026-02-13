@@ -1,9 +1,9 @@
 // api/newsilko.js
-// 기능:
-// 1) "뉴스/속보" -> 오늘(KST) 올라온 기사 중 랜덤 1개
-// 2) "경제/사회/정치/국제/과학/연예/스포츠" 등 -> 해당 주제 오늘 기사 중 랜덤 1개
-// 3) GPT 2단계: (인명치환맵 JSON 추출) -> (뉴스일꼬 말투 변환)
-// 4) 카카오 quickReplies(버튼) 제공
+// ✅ 기능 요약
+// 1) "뉴스/속보" -> 최신 기사들 중 "오늘(KST)" 우선 랜덤 1개, 없으면 24h, 없으면 최신 랜덤
+// 2) "경제/사회/정치/국제/과학/연예/스포츠" -> 해당 주제 기사로 동일 규칙
+// 3) GPT 2단계: (인명 치환 맵 JSON 추출: 받침이면 '이', 모음이면 X) -> (뉴스일꼬 말투 변환)
+// 4) 카카오 basicCard + 기사보기 + quickReplies 제공
 
 const THUMBNAIL_URL =
   "https://upload.wikimedia.org/wikipedia/commons/7/7e/CatB4SVG.png";
@@ -133,10 +133,11 @@ function buildQueryFromUtterance(utterance) {
     }
   }
 
+  // 그 외: 사용자가 입력한 그대로 검색 (예: "이재명", "삼성전자")
   return { query: clean(utterance), mode: "free", topic: "검색" };
 }
 
-// ---------- NAVER ----------
+// ---------- NAVER (오늘 우선 + 24시간 fallback + 최종 fallback) ----------
 async function fetchNaverNewsTodayOnly(query, display = 50) {
   const url =
     "https://openapi.naver.com/v1/search/news.json?" +
@@ -162,15 +163,31 @@ async function fetchNaverNewsTodayOnly(query, display = 50) {
   const items = Array.isArray(j?.items) ? j.items : [];
   if (!items.length) return null;
 
+  // 1) 오늘(KST) 기사
   const todays = items.filter((it) => isTodayKST(it?.pubDate));
-  if (!todays.length) return null;
+  if (todays.length) {
+    const pick = todays[Math.floor(Math.random() * todays.length)];
+    return { title: clean(pick.title), link: pick.link, pubDate: pick.pubDate };
+  }
 
-  const pick = todays[Math.floor(Math.random() * todays.length)];
-  return {
-    title: clean(pick.title),
-    link: pick.link,
-    pubDate: pick.pubDate,
-  };
+  // 2) 최근 24시간 기사
+  const nowMs = Date.now();
+  const DAY = 24 * 60 * 60 * 1000;
+
+  const last24h = items.filter((it) => {
+    const d = new Date(it?.pubDate);
+    if (Number.isNaN(d.getTime())) return false;
+    return nowMs - d.getTime() <= DAY;
+  });
+
+  if (last24h.length) {
+    const pick = last24h[Math.floor(Math.random() * last24h.length)];
+    return { title: clean(pick.title), link: pick.link, pubDate: pick.pubDate };
+  }
+
+  // 3) 최종 fallback: 그냥 최신 목록에서 랜덤
+  const pick = items[Math.floor(Math.random() * items.length)];
+  return { title: clean(pick.title), link: pick.link, pubDate: pick.pubDate };
 }
 
 // ---------- OpenAI base ----------
@@ -337,7 +354,6 @@ function tsunDesc() {
 }
 
 function quickReplies() {
-  // 사용자가 누르면 해당 텍스트가 그대로 utterance로 들어옴
   const mk = (label, messageText) => ({
     action: "message",
     label,
@@ -397,11 +413,7 @@ export default async function handler(req, res) {
     if (!item) {
       return res
         .status(200)
-        .json(
-          kakaoText(
-            `😿 오늘 올라온 ${topic} 기사 중에선 딱 잡히는 게 없네… 다른 버튼 눌러봐.`
-          )
-        );
+        .json(kakaoText(`😿 ${topic} 기사 자체가 안 잡혀… 다른 버튼 눌러봐.`));
     }
 
     const g = await makeCasual(item.title);
@@ -412,7 +424,7 @@ export default async function handler(req, res) {
         .status(200)
         .json(
           kakaoCard(
-            `😿 말투 변환이 잠깐 막혔어…\n오늘 기사 제목만 던져줄게.\n\n${item.title}`,
+            `😿 말투 변환이 잠깐 막혔어…\n일단 제목만 던져줄게.\n\n${item.title}`,
             item.link
           )
         );
