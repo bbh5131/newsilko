@@ -1,4 +1,9 @@
 // api/newsilko.js
+// 기능:
+// 1) "뉴스/속보" -> 오늘(KST) 올라온 기사 중 랜덤 1개
+// 2) "경제/사회/정치/국제/과학/연예/스포츠" 등 -> 해당 주제 오늘 기사 중 랜덤 1개
+// 3) GPT 2단계: (인명치환맵 JSON 추출) -> (뉴스일꼬 말투 변환)
+// 4) 카카오 quickReplies(버튼) 제공
 
 const THUMBNAIL_URL =
   "https://upload.wikimedia.org/wikipedia/commons/7/7e/CatB4SVG.png";
@@ -28,21 +33,19 @@ function getUtterance(req) {
     req?.body?.userRequest?.utterance ||
     req?.body?.userRequest?.params?.utterance ||
     req?.body?.utterance ||
-    "속보"
+    "뉴스"
   );
 }
 
-// 정규식 escape
 function escapeRegExp(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// 긴 문자열 먼저 치환(부분 겹침 방지)
 function applyReplacements(text, map) {
   let out = String(text || "");
   const entries = Object.entries(map || {})
-    .filter(([k, v]) => k && v && k !== v)
-    .sort((a, b) => b[0].length - a[0].length);
+    .filter(([k, v]) => typeof k === "string" && typeof v === "string" && k && v && k !== v)
+    .sort((a, b) => b[0].length - a[0].length); // 긴 키부터
 
   for (const [from, to] of entries) {
     const re = new RegExp(escapeRegExp(from), "g");
@@ -51,11 +54,97 @@ function applyReplacements(text, map) {
   return out;
 }
 
+function normalizeIntent(s) {
+  return clean(s).replace(/\s+/g, "").toLowerCase();
+}
+
+// ---------- today filter (KST) ----------
+function isTodayKST(pubDateStr) {
+  if (!pubDateStr) return false;
+
+  // Naver pubDate: RFC822 (예: "Fri, 13 Feb 2026 10:12:00 +0900")
+  const d = new Date(pubDateStr);
+  if (Number.isNaN(d.getTime())) return false;
+
+  const kstOffsetMs = 9 * 60 * 60 * 1000;
+
+  const now = new Date();
+  const nowKST = new Date(now.getTime() + kstOffsetMs);
+
+  const startKST = new Date(nowKST);
+  startKST.setHours(0, 0, 0, 0);
+
+  const endKST = new Date(startKST);
+  endKST.setDate(endKST.getDate() + 1);
+
+  const dKST = new Date(d.getTime() + kstOffsetMs);
+
+  return dKST >= startKST && dKST < endKST;
+}
+
+// ---------- query router ----------
+function buildQueryFromUtterance(utterance) {
+  const u = normalizeIntent(utterance);
+
+  const isGeneral =
+    !u ||
+    u === "뉴스" ||
+    u === "속보" ||
+    u === "최신" ||
+    u === "랜덤" ||
+    u === "아무거나";
+
+  if (isGeneral) return { query: "속보", mode: "general", topic: "뉴스" };
+
+  const categoryMap = {
+    경제: {
+      query: "경제 (증시 OR 코스피 OR 코스닥 OR 환율 OR 금리 OR 물가 OR 경기 OR 부동산 OR 반도체)",
+      aliases: ["경제", "주식", "증시", "코스피", "코스닥", "환율", "금리", "부동산", "물가"],
+    },
+    사회: {
+      query: "사회 (사건 OR 사고 OR 재난 OR 경찰 OR 법원 OR 교육 OR 노동 OR 복지 OR 의료)",
+      aliases: ["사회", "사건", "사고", "재난", "경찰", "법원", "교육", "노동", "복지", "의료"],
+    },
+    정치: {
+      query: "정치 (국회 OR 대통령실 OR 여야 OR 선거 OR 정당 OR 법안 OR 외교)",
+      aliases: ["정치", "국회", "대통령", "대통령실", "여야", "선거", "정당", "외교"],
+    },
+    국제: {
+      query: "국제 (미국 OR 중국 OR 일본 OR 유럽 OR 우크라이나 OR 중동 OR 정상회담)",
+      aliases: ["국제", "해외", "미국", "중국", "일본", "유럽", "우크라이나", "중동"],
+    },
+    과학: {
+      query: "과학 (ai OR 인공지능 OR 반도체 OR 우주 OR 연구 OR 논문 OR 기술)",
+      aliases: ["과학", "기술", "ai", "인공지능", "반도체", "우주", "연구", "논문"],
+    },
+    연예: {
+      query: "연예 (배우 OR 아이돌 OR 가수 OR 드라마 OR 영화 OR 열애)",
+      aliases: ["연예", "셀럽", "아이돌", "배우", "가수", "드라마", "영화", "열애"],
+    },
+    스포츠: {
+      query: "스포츠 (축구 OR 야구 OR 농구 OR 배구 OR e스포츠 OR 국가대표)",
+      aliases: ["스포츠", "축구", "야구", "농구", "배구", "e스포츠", "이스포츠", "국가대표"],
+    },
+  };
+
+  for (const [cat, cfg] of Object.entries(categoryMap)) {
+    if (cfg.aliases.some((w) => u.includes(w))) {
+      return { query: cfg.query, mode: `category:${cat}`, topic: cat };
+    }
+  }
+
+  return { query: clean(utterance), mode: "free", topic: "검색" };
+}
+
 // ---------- NAVER ----------
-async function fetchNaverNews(query) {
+async function fetchNaverNewsTodayOnly(query, display = 50) {
   const url =
     "https://openapi.naver.com/v1/search/news.json?" +
-    new URLSearchParams({ query, display: "1", sort: "date" }).toString();
+    new URLSearchParams({
+      query,
+      display: String(display),
+      sort: "date",
+    }).toString();
 
   const r = await fetch(url, {
     headers: {
@@ -70,13 +159,21 @@ async function fetchNaverNews(query) {
   }
 
   const j = await r.json().catch(() => ({}));
-  const item = j?.items?.[0];
-  if (!item) return null;
+  const items = Array.isArray(j?.items) ? j.items : [];
+  if (!items.length) return null;
 
-  return { title: clean(item.title), link: item.link };
+  const todays = items.filter((it) => isTodayKST(it?.pubDate));
+  if (!todays.length) return null;
+
+  const pick = todays[Math.floor(Math.random() * todays.length)];
+  return {
+    title: clean(pick.title),
+    link: pick.link,
+    pubDate: pick.pubDate,
+  };
 }
 
-// ---------- OpenAI ----------
+// ---------- OpenAI base ----------
 function normalizeForCompare(s) {
   return clean(s)
     .replace(/[“”"']/g, "")
@@ -86,7 +183,7 @@ function normalizeForCompare(s) {
     .trim();
 }
 
-async function callOpenAI(messages, timeoutMs = 8000) {
+async function callOpenAI(messages, { temperature = 0.4, max_tokens = 220, timeoutMs = 8000 } = {}) {
   const key = process.env.OPENAI_API_KEY || "";
   if (!key) return { ok: false, text: "", why: "OPENAI_API_KEY 없음" };
 
@@ -103,8 +200,8 @@ async function callOpenAI(messages, timeoutMs = 8000) {
       },
       body: JSON.stringify({
         model: "gpt-4o-mini",
-        temperature: 0.4, // 추출/규칙 작업은 낮게
-        max_tokens: 220,
+        temperature,
+        max_tokens,
         messages,
       }),
     });
@@ -129,18 +226,18 @@ async function callOpenAI(messages, timeoutMs = 8000) {
   }
 }
 
-// ---------- GPT #1: 인명 치환 맵 만들기 ----------
+// ---------- GPT #1: 인명 치환 맵(JSON) ----------
 async function buildNameMap(title) {
-  const sys = `너는 한국어 제목에서 "사람 이름(인명)"을 찾아 치환하는 도구야.
-출력은 반드시 JSON 하나만. 다른 말 절대 금지.
+  const sys = `너는 한국어 뉴스 제목에서 "사람 이름(인명)"만 찾아 치환 맵을 만드는 도구야.
+출력은 JSON 하나만. 다른 말 절대 금지.
 
 규칙:
-- 입력 제목에 등장하는 "사람 이름(인명)"만 대상으로 한다. (기관/지명/브랜드는 제외)
+- 입력 제목에 등장하는 "사람 이름(인명)"만 대상으로 한다. (기관/지명/브랜드/단체는 제외)
 - 한국인 이름이 성+이름(보통 2~4글자)로 나오면 성(첫 글자) 제거, 이름만 남긴다.
 - 이름 끝 글자에 받침이 있으면 "이"를 붙인다. 받침이 없으면 붙이지 않는다.
-  예: 윤석열→석열이, 문재인→재인이, 이재명→재명이, 김찬희→찬희, 박지우→지우
+  예: 윤석열→석열이, 문재인→재인이, 이재명→재명이, 김찬희→찬희, 박지우→지우, 유진→유진이
 - 직책/호칭이 붙은 형태도 함께 매핑한다.
-  예: "윤 대통령" 같은 표현이 있으면 그것도 키로 추가해 같은 값으로 매핑.
+  예: "윤 대통령", "문 전 대통령", "이 대표" 같은 표현이 제목에 있으면 그것도 키로 추가해 같은 값으로 매핑한다.
 - 치환 대상이 없으면 빈 객체 {} 를 출력한다.
 
 JSON 형식:
@@ -154,18 +251,17 @@ JSON 형식:
       { role: "system", content: sys },
       { role: "user", content: title },
     ],
-    8000
+    { temperature: 0.2, max_tokens: 260, timeoutMs: 8000 }
   );
 
   if (!r.ok) return { ok: false, map: {}, why: r.why };
 
-  // JSON 파싱 안전 처리
   try {
     const obj = JSON.parse(r.text);
     if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
       return { ok: false, map: {}, why: "인명맵 JSON 형식이 아님" };
     }
-    // 값이 문자열인 것만
+
     const map = {};
     for (const [k, v] of Object.entries(obj)) {
       if (typeof k === "string" && typeof v === "string" && k.trim() && v.trim()) {
@@ -178,7 +274,7 @@ JSON 형식:
   }
 }
 
-// ---------- GPT #2: 뉴스일꼬 말투 변환 ----------
+// ---------- GPT #2: 뉴스일꼬 말투 ----------
 async function toNewsilkoStyle(titleAfterReplace) {
   const sys = `너는 "뉴스일꼬"라는 츤데레 고양이야 🐱
 입력은 "뉴스 제목(이미 인명 치환 완료)"이고, 출력은 친구한테 카톡 보내듯 귀엽고 자연스러운 한국어 구어체로 1~2문장이야.
@@ -187,73 +283,35 @@ async function toNewsilkoStyle(titleAfterReplace) {
 - 존댓말 금지(합니다/됩니다 금지)
 - 딱딱한 뉴스체 금지(…/기자/매체/인용부호/괄호/대괄호/말줄임표 사용 금지)
 - "~했다" 대신 "~했대", "~라네", "~래" 같은 느낌
+- 과장 너무 심하게 하지 말고 자연스럽게
 - 40~95자 정도
 - 제목을 그대로 베끼지 말고 말로 풀어쓰기
-- 출력에 원문 인명(성 포함)이 다시 등장하면 안 됨`;
+- 출력에 성 포함 원문 인명이 다시 등장하면 안 됨`;
 
-  // 스타일 변환은 살짝 온도 올림
-  const r = await (async () => {
-    const key = process.env.OPENAI_API_KEY || "";
-    if (!key) return { ok: false, text: "", why: "OPENAI_API_KEY 없음" };
-
-    const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), 8000);
-
-    try {
-      const resp = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        signal: controller.signal,
-        headers: {
-          Authorization: `Bearer ${key}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          temperature: 0.95,
-          max_tokens: 160,
-          messages: [
-            { role: "system", content: sys },
-            { role: "user", content: titleAfterReplace },
-          ],
-        }),
-      });
-
-      if (!resp.ok) {
-        const body = await resp.text().catch(() => "");
-        return { ok: false, text: "", why: `OpenAI ${resp.status}: ${body.slice(0, 200)}` };
-      }
-
-      const j = await resp.json().catch(() => ({}));
-      const out = clean(j?.choices?.[0]?.message?.content || "");
-      if (!out) return { ok: false, text: "", why: "OpenAI 응답 비었음" };
-      return { ok: true, text: out, why: "" };
-    } catch (e) {
-      if (String(e?.name) === "AbortError") {
-        return { ok: false, text: "", why: `OpenAI 타임아웃(8000ms)` };
-      }
-      return { ok: false, text: "", why: `OpenAI 호출 오류: ${String(e).slice(0, 200)}` };
-    } finally {
-      clearTimeout(t);
-    }
-  })();
-
-  return r;
+  return await callOpenAI(
+    [
+      { role: "system", content: sys },
+      { role: "user", content: titleAfterReplace },
+    ],
+    { temperature: 0.95, max_tokens: 170, timeoutMs: 8000 }
+  );
 }
 
 async function makeCasual(title) {
-  // 1) 인명맵 생성
   const nm = await buildNameMap(title);
   const replacedTitle = nm.ok ? applyReplacements(title, nm.map) : title;
 
-  // 2) 말투 변환
   const a = await toNewsilkoStyle(replacedTitle);
-  if (!a.ok) return { ok: false, text: "", why: a.why, replacedTitle, nameMapOk: nm.ok, nameMapWhy: nm.why };
+  if (!a.ok) {
+    return { ok: false, text: "", why: a.why, replacedTitle, nameMapOk: nm.ok, nameMapWhy: nm.why };
+  }
 
-  // 제목이랑 너무 비슷하면 한 번 더
   const t0 = normalizeForCompare(replacedTitle);
   const t1 = normalizeForCompare(a.text);
   const tooSimilar = t1 && t0 && (t1 === t0 || t1.includes(t0) || t0.includes(t1));
-  if (!tooSimilar) return { ok: true, text: a.text, why: "", replacedTitle, nameMapOk: nm.ok, nameMapWhy: nm.why };
+  if (!tooSimilar) {
+    return { ok: true, text: a.text, why: "", replacedTitle, nameMapOk: nm.ok, nameMapWhy: nm.why };
+  }
 
   const b = await toNewsilkoStyle(`제목 그대로 쓰지 말고 친구한테 말하듯 풀어써: ${replacedTitle}`);
   return b.ok
@@ -261,7 +319,7 @@ async function makeCasual(title) {
     : { ok: true, text: a.text, why: "", replacedTitle, nameMapOk: nm.ok, nameMapWhy: nm.why };
 }
 
-// ---------- Kakao response ----------
+// ---------- Kakao ----------
 function tsunTitle() {
   const titles = [
     "기사 궁금하면… 눌러.",
@@ -276,6 +334,26 @@ function tsunTitle() {
 function tsunDesc() {
   const descs = ["…흥.", "난 그냥 알려준 거야.", "괜히 눌러주는 거 아냐?", "몰라. 궁금하면 봐.", ""];
   return descs[Math.floor(Math.random() * descs.length)];
+}
+
+function quickReplies() {
+  // 사용자가 누르면 해당 텍스트가 그대로 utterance로 들어옴
+  const mk = (label, messageText) => ({
+    action: "message",
+    label,
+    messageText,
+  });
+
+  return [
+    mk("오늘 뉴스", "뉴스"),
+    mk("경제", "경제"),
+    mk("사회", "사회"),
+    mk("정치", "정치"),
+    mk("국제", "국제"),
+    mk("과학", "과학"),
+    mk("연예", "연예"),
+    mk("스포츠", "스포츠"),
+  ];
 }
 
 function kakaoCard(text, link) {
@@ -293,6 +371,7 @@ function kakaoCard(text, link) {
           },
         },
       ],
+      quickReplies: quickReplies(),
     },
   };
 }
@@ -300,24 +379,43 @@ function kakaoCard(text, link) {
 function kakaoText(msg) {
   return {
     version: "2.0",
-    template: { outputs: [{ simpleText: { text: msg } }] },
+    template: {
+      outputs: [{ simpleText: { text: msg } }],
+      quickReplies: quickReplies(),
+    },
   };
 }
 
 // ---------- handler ----------
 export default async function handler(req, res) {
   try {
-    const q = getUtterance(req);
-    const item = await fetchNaverNews(q);
-    if (!item) return res.status(200).json(kakaoText("😿 오늘은 뉴스가 안 잡힌다… 다시 말 걸어봐."));
+    const utter = getUtterance(req);
+    const { query, topic } = buildQueryFromUtterance(utter);
+
+    const item = await fetchNaverNewsTodayOnly(query, 50);
+
+    if (!item) {
+      return res
+        .status(200)
+        .json(
+          kakaoText(
+            `😿 오늘 올라온 ${topic} 기사 중에선 딱 잡히는 게 없네… 다른 버튼 눌러봐.`
+          )
+        );
+    }
 
     const g = await makeCasual(item.title);
 
     if (!g.ok) {
-      console.error("[OPENAI_FAIL]", g.why);
+      console.error("[OPENAI_FAIL]", g.why, { nameMapOk: g.nameMapOk, nameMapWhy: g.nameMapWhy });
       return res
         .status(200)
-        .json(kakaoCard(`😿 말투 변환이 잠깐 막혔어…\n일단 제목만 던져줄게.\n\n${item.title}`, item.link));
+        .json(
+          kakaoCard(
+            `😿 말투 변환이 잠깐 막혔어…\n오늘 기사 제목만 던져줄게.\n\n${item.title}`,
+            item.link
+          )
+        );
     }
 
     return res.status(200).json(kakaoCard(g.text, item.link));
