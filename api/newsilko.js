@@ -32,12 +32,23 @@ function getUtterance(req) {
   );
 }
 
-// ---------- name replace safety net ----------
-function replaceNames(text) {
-  return String(text || "")
-    .replace(/윤석열|윤 대통령/g, "석열이")
-    .replace(/문재인|문 전 대통령/g, "재인이")
-    .replace(/이재명|이 대통령/g, "재명이");
+// 정규식 escape
+function escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// 긴 문자열 먼저 치환(부분 겹침 방지)
+function applyReplacements(text, map) {
+  let out = String(text || "");
+  const entries = Object.entries(map || {})
+    .filter(([k, v]) => k && v && k !== v)
+    .sort((a, b) => b[0].length - a[0].length);
+
+  for (const [from, to] of entries) {
+    const re = new RegExp(escapeRegExp(from), "g");
+    out = out.replace(re, to);
+  }
+  return out;
 }
 
 // ---------- NAVER ----------
@@ -75,7 +86,7 @@ function normalizeForCompare(s) {
     .trim();
 }
 
-async function callOpenAI(title, timeoutMs = 8000) {
+async function callOpenAI(messages, timeoutMs = 8000) {
   const key = process.env.OPENAI_API_KEY || "";
   if (!key) return { ok: false, text: "", why: "OPENAI_API_KEY 없음" };
 
@@ -92,38 +103,9 @@ async function callOpenAI(title, timeoutMs = 8000) {
       },
       body: JSON.stringify({
         model: "gpt-4o-mini",
-        temperature: 0.95,
-        max_tokens: 140,
-        messages: [
-          {
-            role: "system",
-            content: `너는 "뉴스일꼬"라는 츤데레 고양이야 🐱
-입력은 "뉴스 제목"이고, 출력은 친구한테 카톡 보내듯 귀엽고 자연스러운 한국어 구어체로 1~2문장이야.
-
-말투 규칙:
-- 존댓말 금지(합니다/됩니다 금지)
-- 딱딱한 뉴스체 금지(…/기자/매체/인용부호/괄호/대괄호/말줄임표 사용 금지)
-- "~했다" 대신 "~했대", "~라네", "~래" 같은 느낌으로
-- 과장 너무 심하게 하지 말고 자연스럽게
-- 40~95자 정도
-
-이름 치환(반드시 적용):
-- 윤석열, 윤 대통령 → 석열이
-- 문재인, 문 전 대통령 → 재인이
-- 이재명, 이 대통령 → 재명이
-
-좋은 예:
-- "전주에서 달리던 차에 불 났는데 다행히 사람은 안 다쳤대. 깜짝이야 😿"
-- "석열이랑 재명이 또 말이 나왔대. 시끄럽다 진짜 😼"
-
-나쁜 예:
-- "윤 대통령은…" (이름 치환 안 함)
-- "…로 확인됐다." (딱딱함)
-
-제목을 그대로 베끼지 말고, 말로 풀어서 써.`,
-          },
-          { role: "user", content: title },
-        ],
+        temperature: 0.4, // 추출/규칙 작업은 낮게
+        max_tokens: 220,
+        messages,
       }),
     });
 
@@ -147,19 +129,136 @@ async function callOpenAI(title, timeoutMs = 8000) {
   }
 }
 
+// ---------- GPT #1: 인명 치환 맵 만들기 ----------
+async function buildNameMap(title) {
+  const sys = `너는 한국어 제목에서 "사람 이름(인명)"을 찾아 치환하는 도구야.
+출력은 반드시 JSON 하나만. 다른 말 절대 금지.
+
+규칙:
+- 입력 제목에 등장하는 "사람 이름(인명)"만 대상으로 한다. (기관/지명/브랜드는 제외)
+- 한국인 이름이 성+이름(보통 2~4글자)로 나오면 성(첫 글자) 제거, 이름만 남긴다.
+- 이름 끝 글자에 받침이 있으면 "이"를 붙인다. 받침이 없으면 붙이지 않는다.
+  예: 윤석열→석열이, 문재인→재인이, 이재명→재명이, 김찬희→찬희, 박지우→지우
+- 직책/호칭이 붙은 형태도 함께 매핑한다.
+  예: "윤 대통령" 같은 표현이 있으면 그것도 키로 추가해 같은 값으로 매핑.
+- 치환 대상이 없으면 빈 객체 {} 를 출력한다.
+
+JSON 형식:
+{
+  "원문표현1": "치환표현1",
+  "원문표현2": "치환표현2"
+}`;
+
+  const r = await callOpenAI(
+    [
+      { role: "system", content: sys },
+      { role: "user", content: title },
+    ],
+    8000
+  );
+
+  if (!r.ok) return { ok: false, map: {}, why: r.why };
+
+  // JSON 파싱 안전 처리
+  try {
+    const obj = JSON.parse(r.text);
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+      return { ok: false, map: {}, why: "인명맵 JSON 형식이 아님" };
+    }
+    // 값이 문자열인 것만
+    const map = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof k === "string" && typeof v === "string" && k.trim() && v.trim()) {
+        map[k.trim()] = v.trim();
+      }
+    }
+    return { ok: true, map, why: "" };
+  } catch (e) {
+    return { ok: false, map: {}, why: `인명맵 JSON 파싱 실패: ${String(e).slice(0, 120)}` };
+  }
+}
+
+// ---------- GPT #2: 뉴스일꼬 말투 변환 ----------
+async function toNewsilkoStyle(titleAfterReplace) {
+  const sys = `너는 "뉴스일꼬"라는 츤데레 고양이야 🐱
+입력은 "뉴스 제목(이미 인명 치환 완료)"이고, 출력은 친구한테 카톡 보내듯 귀엽고 자연스러운 한국어 구어체로 1~2문장이야.
+
+말투 규칙:
+- 존댓말 금지(합니다/됩니다 금지)
+- 딱딱한 뉴스체 금지(…/기자/매체/인용부호/괄호/대괄호/말줄임표 사용 금지)
+- "~했다" 대신 "~했대", "~라네", "~래" 같은 느낌
+- 40~95자 정도
+- 제목을 그대로 베끼지 말고 말로 풀어쓰기
+- 출력에 원문 인명(성 포함)이 다시 등장하면 안 됨`;
+
+  // 스타일 변환은 살짝 온도 올림
+  const r = await (async () => {
+    const key = process.env.OPENAI_API_KEY || "";
+    if (!key) return { ok: false, text: "", why: "OPENAI_API_KEY 없음" };
+
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 8000);
+
+    try {
+      const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          temperature: 0.95,
+          max_tokens: 160,
+          messages: [
+            { role: "system", content: sys },
+            { role: "user", content: titleAfterReplace },
+          ],
+        }),
+      });
+
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => "");
+        return { ok: false, text: "", why: `OpenAI ${resp.status}: ${body.slice(0, 200)}` };
+      }
+
+      const j = await resp.json().catch(() => ({}));
+      const out = clean(j?.choices?.[0]?.message?.content || "");
+      if (!out) return { ok: false, text: "", why: "OpenAI 응답 비었음" };
+      return { ok: true, text: out, why: "" };
+    } catch (e) {
+      if (String(e?.name) === "AbortError") {
+        return { ok: false, text: "", why: `OpenAI 타임아웃(8000ms)` };
+      }
+      return { ok: false, text: "", why: `OpenAI 호출 오류: ${String(e).slice(0, 200)}` };
+    } finally {
+      clearTimeout(t);
+    }
+  })();
+
+  return r;
+}
+
 async function makeCasual(title) {
-  const a = await callOpenAI(title, 8000);
-  if (!a.ok) return a;
+  // 1) 인명맵 생성
+  const nm = await buildNameMap(title);
+  const replacedTitle = nm.ok ? applyReplacements(title, nm.map) : title;
 
-  // 결과가 제목이랑 너무 비슷하면 한 번 더 강하게
-  const t0 = normalizeForCompare(title);
+  // 2) 말투 변환
+  const a = await toNewsilkoStyle(replacedTitle);
+  if (!a.ok) return { ok: false, text: "", why: a.why, replacedTitle, nameMapOk: nm.ok, nameMapWhy: nm.why };
+
+  // 제목이랑 너무 비슷하면 한 번 더
+  const t0 = normalizeForCompare(replacedTitle);
   const t1 = normalizeForCompare(a.text);
-
   const tooSimilar = t1 && t0 && (t1 === t0 || t1.includes(t0) || t0.includes(t1));
-  if (!tooSimilar) return a;
+  if (!tooSimilar) return { ok: true, text: a.text, why: "", replacedTitle, nameMapOk: nm.ok, nameMapWhy: nm.why };
 
-  const b = await callOpenAI(`제목을 그대로 쓰지 말고, 친구한테 말하듯 풀어서 말해줘: ${title}`, 8000);
-  return b.ok ? b : a;
+  const b = await toNewsilkoStyle(`제목 그대로 쓰지 말고 친구한테 말하듯 풀어써: ${replacedTitle}`);
+  return b.ok
+    ? { ok: true, text: b.text, why: "", replacedTitle, nameMapOk: nm.ok, nameMapWhy: nm.why }
+    : { ok: true, text: a.text, why: "", replacedTitle, nameMapOk: nm.ok, nameMapWhy: nm.why };
 }
 
 // ---------- Kakao response ----------
@@ -216,14 +315,12 @@ export default async function handler(req, res) {
 
     if (!g.ok) {
       console.error("[OPENAI_FAIL]", g.why);
-      const fallback = replaceNames(item.title);
       return res
         .status(200)
-        .json(kakaoCard(`😿 말투 변환이 잠깐 막혔어…\n일단 제목만 던져줄게.\n\n${fallback}`, item.link));
+        .json(kakaoCard(`😿 말투 변환이 잠깐 막혔어…\n일단 제목만 던져줄게.\n\n${item.title}`, item.link));
     }
 
-    const finalText = replaceNames(g.text);
-    return res.status(200).json(kakaoCard(finalText, item.link));
+    return res.status(200).json(kakaoCard(g.text, item.link));
   } catch (e) {
     console.error("[NEWSILKO_ERR]", e);
     return res.status(200).json(kakaoText("😿 일꼬가 잠깐 멈췄어… 다시!"));
