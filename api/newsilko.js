@@ -4,8 +4,7 @@
 // 2) "경제/사회/정치/국제/과학/연예/스포츠" -> 해당 주제 기사로 동일 규칙
 // 3) GPT 2단계: (인명 치환 맵 JSON 추출: 받침이면 '이', 모음이면 X) -> (뉴스일꼬 말투 변환)
 // 4) 카카오 basicCard + 기사보기 + quickReplies 제공
-
-import * as cheerio from "cheerio";
+// 5) ✅ 추가: 기사 페이지 og:image 1장 가져와 썸네일로 사용 (800ms 제한 + 실패시 고양이)
 
 const THUMBNAIL_URL =
   "https://upload.wikimedia.org/wikipedia/commons/7/7e/CatB4SVG.png";
@@ -46,7 +45,14 @@ function escapeRegExp(s) {
 function applyReplacements(text, map) {
   let out = String(text || "");
   const entries = Object.entries(map || {})
-    .filter(([k, v]) => typeof k === "string" && typeof v === "string" && k && v && k !== v)
+    .filter(
+      ([k, v]) =>
+        typeof k === "string" &&
+        typeof v === "string" &&
+        k &&
+        v &&
+        k !== v
+    )
     .sort((a, b) => b[0].length - a[0].length); // 긴 키부터
 
   for (const [from, to] of entries) {
@@ -100,11 +106,23 @@ function buildQueryFromUtterance(utterance) {
 
   const categoryMap = {
     경제: {
-      query: "경제 (증시 OR 코스피 OR 코스닥 OR 환율 OR 금리 OR 물가 OR 경기 OR 부동산 OR 반도체)",
-      aliases: ["경제", "주식", "증시", "코스피", "코스닥", "환율", "금리", "부동산", "물가"],
+      query:
+        "경제 (증시 OR 코스피 OR 코스닥 OR 환율 OR 금리 OR 물가 OR 경기 OR 부동산 OR 반도체)",
+      aliases: [
+        "경제",
+        "주식",
+        "증시",
+        "코스피",
+        "코스닥",
+        "환율",
+        "금리",
+        "부동산",
+        "물가",
+      ],
     },
     사회: {
-      query: "사회 (사건 OR 사고 OR 재난 OR 경찰 OR 법원 OR 교육 OR 노동 OR 복지 OR 의료)",
+      query:
+        "사회 (사건 OR 사고 OR 재난 OR 경찰 OR 법원 OR 교육 OR 노동 OR 복지 OR 의료)",
       aliases: ["사회", "사건", "사고", "재난", "경찰", "법원", "교육", "노동", "복지", "의료"],
     },
     정치: {
@@ -135,7 +153,7 @@ function buildQueryFromUtterance(utterance) {
     }
   }
 
-  // 그 외: 사용자가 입력한 그대로 검색
+  // 그 외: 사용자가 입력한 그대로 검색 (예: "이재명", "삼성전자")
   return { query: clean(utterance), mode: "free", topic: "검색" };
 }
 
@@ -165,14 +183,16 @@ async function fetchNaverNewsTodayOnly(query, display = 50) {
   const items = Array.isArray(j?.items) ? j.items : [];
   if (!items.length) return null;
 
-  const todays = items.filter((it) => isTodayKST(it?.pubDate));
   const pickFrom = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
+  // 1) 오늘(KST) 기사
+  const todays = items.filter((it) => isTodayKST(it?.pubDate));
   if (todays.length) {
     const pick = pickFrom(todays);
     return { title: clean(pick.title), link: pick.link, pubDate: pick.pubDate };
   }
 
+  // 2) 최근 24시간 기사
   const nowMs = Date.now();
   const DAY = 24 * 60 * 60 * 1000;
 
@@ -187,15 +207,17 @@ async function fetchNaverNewsTodayOnly(query, display = 50) {
     return { title: clean(pick.title), link: pick.link, pubDate: pick.pubDate };
   }
 
+  // 3) 최종 fallback: 그냥 최신 목록에서 랜덤
   const pick = pickFrom(items);
   return { title: clean(pick.title), link: pick.link, pubDate: pick.pubDate };
 }
 
-// ---------- ✅ NEW: 기사 페이지에서 og:image 추출 ----------
-async function getOgImage(articleUrl, timeoutMs = 3500) {
+// ---------- ✅ NEW: og:image 추출 (초경량/짧은 타임아웃) ----------
+// 카카오 타임아웃(약 5초)을 피하려고 800ms로 강제 제한.
+// 실패하면 null -> 고양이 썸네일로 바로 진행.
+async function getOgImage(articleUrl, timeoutMs = 800) {
   if (!articleUrl || typeof articleUrl !== "string") return null;
 
-  // 카카오는 https 이미지가 훨씬 안전함
   const normalizeHttps = (u) =>
     u && typeof u === "string" ? u.replace(/^http:\/\//i, "https://") : null;
 
@@ -218,24 +240,21 @@ async function getOgImage(articleUrl, timeoutMs = 3500) {
     const html = await r.text().catch(() => "");
     if (!html) return null;
 
-    const $ = cheerio.load(html);
+    const patterns = [
+      /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i,
+      /<meta[^>]+name=["']og:image["'][^>]+content=["']([^"']+)["']/i,
+      /<meta[^>]+property=["']twitter:image["'][^>]+content=["']([^"']+)["']/i,
+      /<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i,
+    ];
 
-    const candidates = [
-      $('meta[property="og:image"]').attr("content"),
-      $('meta[name="og:image"]').attr("content"),
-      $('meta[property="twitter:image"]').attr("content"),
-      $('meta[name="twitter:image"]').attr("content"),
-    ]
-      .map((x) => (x ? String(x).trim() : ""))
-      .filter(Boolean);
-
-    if (!candidates.length) return null;
-
-    // 첫 번째 유효한 URL 사용
-    const img = candidates.find((u) => /^https?:\/\//i.test(u));
-    return normalizeHttps(img || null);
-  } catch (e) {
-    // 타임아웃/차단 등은 그냥 null로 처리 (fallback로 고양이 쓰면 됨)
+    for (const re of patterns) {
+      const m = html.match(re);
+      if (m && m[1] && /^https?:\/\//i.test(m[1])) {
+        return normalizeHttps(m[1].trim());
+      }
+    }
+    return null;
+  } catch {
     return null;
   } finally {
     clearTimeout(t);
@@ -252,7 +271,10 @@ function normalizeForCompare(s) {
     .trim();
 }
 
-async function callOpenAI(messages, { temperature = 0.4, max_tokens = 220, timeoutMs = 8000 } = {}) {
+async function callOpenAI(
+  messages,
+  { temperature = 0.4, max_tokens = 220, timeoutMs = 8000 } = {}
+) {
   const key = process.env.OPENAI_API_KEY || "";
   if (!key) return { ok: false, text: "", why: "OPENAI_API_KEY 없음" };
 
@@ -424,7 +446,6 @@ function quickReplies() {
   ];
 }
 
-// ✅ thumbUrl 인자 추가
 function kakaoCard(text, link, thumbUrl = THUMBNAIL_URL) {
   const imageUrl = thumbUrl || THUMBNAIL_URL;
 
@@ -437,7 +458,7 @@ function kakaoCard(text, link, thumbUrl = THUMBNAIL_URL) {
           basicCard: {
             thumbnail: {
               imageUrl,
-              link: { web_url: link, mobile_web_url: link }, // 일부 클라이언트에서 도움이 됨
+              link: { web_url: link, mobile_web_url: link },
             },
             title: tsunTitle(),
             description: tsunDesc(),
@@ -472,14 +493,20 @@ export default async function handler(req, res) {
       return res.status(200).json(kakaoText(`😿 ${topic} 기사 자체가 안 잡혀… 다른 버튼 눌러봐.`));
     }
 
-    // ✅ NEW: og:image 추출 (실패하면 고양이)
-    const ogImage = await getOgImage(item.link);
+    // ✅ 핵심: og:image + GPT 병렬 실행 (카카오 타임아웃 방지)
+    const ogPromise = getOgImage(item.link, 800);
+    const gPromise = makeCasual(item.title);
+
+    const [ogImage, g] = await Promise.all([ogPromise, gPromise]);
+
     const thumbUrl = ogImage || THUMBNAIL_URL;
 
-    const g = await makeCasual(item.title);
+    if (!g?.ok) {
+      console.error("[OPENAI_FAIL]", g?.why, {
+        nameMapOk: g?.nameMapOk,
+        nameMapWhy: g?.nameMapWhy,
+      });
 
-    if (!g.ok) {
-      console.error("[OPENAI_FAIL]", g.why, { nameMapOk: g.nameMapOk, nameMapWhy: g.nameMapWhy });
       return res
         .status(200)
         .json(
