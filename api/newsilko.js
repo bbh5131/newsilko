@@ -5,6 +5,8 @@
 // 3) GPT 2단계: (인명 치환 맵 JSON 추출: 받침이면 '이', 모음이면 X) -> (뉴스일꼬 말투 변환)
 // 4) 카카오 basicCard + 기사보기 + quickReplies 제공
 
+import * as cheerio from "cheerio";
+
 const THUMBNAIL_URL =
   "https://upload.wikimedia.org/wikipedia/commons/7/7e/CatB4SVG.png";
 
@@ -133,7 +135,7 @@ function buildQueryFromUtterance(utterance) {
     }
   }
 
-  // 그 외: 사용자가 입력한 그대로 검색 (예: "이재명", "삼성전자")
+  // 그 외: 사용자가 입력한 그대로 검색
   return { query: clean(utterance), mode: "free", topic: "검색" };
 }
 
@@ -163,14 +165,14 @@ async function fetchNaverNewsTodayOnly(query, display = 50) {
   const items = Array.isArray(j?.items) ? j.items : [];
   if (!items.length) return null;
 
-  // 1) 오늘(KST) 기사
   const todays = items.filter((it) => isTodayKST(it?.pubDate));
+  const pickFrom = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
   if (todays.length) {
-    const pick = todays[Math.floor(Math.random() * todays.length)];
+    const pick = pickFrom(todays);
     return { title: clean(pick.title), link: pick.link, pubDate: pick.pubDate };
   }
 
-  // 2) 최근 24시간 기사
   const nowMs = Date.now();
   const DAY = 24 * 60 * 60 * 1000;
 
@@ -181,13 +183,63 @@ async function fetchNaverNewsTodayOnly(query, display = 50) {
   });
 
   if (last24h.length) {
-    const pick = last24h[Math.floor(Math.random() * last24h.length)];
+    const pick = pickFrom(last24h);
     return { title: clean(pick.title), link: pick.link, pubDate: pick.pubDate };
   }
 
-  // 3) 최종 fallback: 그냥 최신 목록에서 랜덤
-  const pick = items[Math.floor(Math.random() * items.length)];
+  const pick = pickFrom(items);
   return { title: clean(pick.title), link: pick.link, pubDate: pick.pubDate };
+}
+
+// ---------- ✅ NEW: 기사 페이지에서 og:image 추출 ----------
+async function getOgImage(articleUrl, timeoutMs = 3500) {
+  if (!articleUrl || typeof articleUrl !== "string") return null;
+
+  // 카카오는 https 이미지가 훨씬 안전함
+  const normalizeHttps = (u) =>
+    u && typeof u === "string" ? u.replace(/^http:\/\//i, "https://") : null;
+
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const r = await fetch(articleUrl, {
+      signal: controller.signal,
+      redirect: "follow",
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari",
+        Accept: "text/html,application/xhtml+xml",
+      },
+    });
+
+    if (!r.ok) return null;
+
+    const html = await r.text().catch(() => "");
+    if (!html) return null;
+
+    const $ = cheerio.load(html);
+
+    const candidates = [
+      $('meta[property="og:image"]').attr("content"),
+      $('meta[name="og:image"]').attr("content"),
+      $('meta[property="twitter:image"]').attr("content"),
+      $('meta[name="twitter:image"]').attr("content"),
+    ]
+      .map((x) => (x ? String(x).trim() : ""))
+      .filter(Boolean);
+
+    if (!candidates.length) return null;
+
+    // 첫 번째 유효한 URL 사용
+    const img = candidates.find((u) => /^https?:\/\//i.test(u));
+    return normalizeHttps(img || null);
+  } catch (e) {
+    // 타임아웃/차단 등은 그냥 null로 처리 (fallback로 고양이 쓰면 됨)
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 // ---------- OpenAI base ----------
@@ -372,7 +424,10 @@ function quickReplies() {
   ];
 }
 
-function kakaoCard(text, link) {
+// ✅ thumbUrl 인자 추가
+function kakaoCard(text, link, thumbUrl = THUMBNAIL_URL) {
+  const imageUrl = thumbUrl || THUMBNAIL_URL;
+
   return {
     version: "2.0",
     template: {
@@ -380,7 +435,10 @@ function kakaoCard(text, link) {
         { simpleText: { text } },
         {
           basicCard: {
-            thumbnail: { imageUrl: THUMBNAIL_URL },
+            thumbnail: {
+              imageUrl,
+              link: { web_url: link, mobile_web_url: link }, // 일부 클라이언트에서 도움이 됨
+            },
             title: tsunTitle(),
             description: tsunDesc(),
             buttons: [{ action: "webLink", label: "기사보기", webLinkUrl: link }],
@@ -411,10 +469,12 @@ export default async function handler(req, res) {
     const item = await fetchNaverNewsTodayOnly(query, 50);
 
     if (!item) {
-      return res
-        .status(200)
-        .json(kakaoText(`😿 ${topic} 기사 자체가 안 잡혀… 다른 버튼 눌러봐.`));
+      return res.status(200).json(kakaoText(`😿 ${topic} 기사 자체가 안 잡혀… 다른 버튼 눌러봐.`));
     }
+
+    // ✅ NEW: og:image 추출 (실패하면 고양이)
+    const ogImage = await getOgImage(item.link);
+    const thumbUrl = ogImage || THUMBNAIL_URL;
 
     const g = await makeCasual(item.title);
 
@@ -425,12 +485,13 @@ export default async function handler(req, res) {
         .json(
           kakaoCard(
             `😿 말투 변환이 잠깐 막혔어…\n일단 제목만 던져줄게.\n\n${item.title}`,
-            item.link
+            item.link,
+            thumbUrl
           )
         );
     }
 
-    return res.status(200).json(kakaoCard(g.text, item.link));
+    return res.status(200).json(kakaoCard(g.text, item.link, thumbUrl));
   } catch (e) {
     console.error("[NEWSILKO_ERR]", e);
     return res.status(200).json(kakaoText("😿 일꼬가 잠깐 멈췄어… 다시!"));
