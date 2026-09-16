@@ -19,7 +19,9 @@ function decodeEntities(str) {
 }
 
 function clean(s) {
-  return decodeEntities(stripHtml(s)).replace(/\s+/g, " ").trim();
+  return decodeEntities(stripHtml(s))
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function getUtterance(req) {
@@ -37,25 +39,104 @@ function escapeRegExp(s) {
 
 function applyReplacements(text, map) {
   let out = String(text || "");
+
   const entries = Object.entries(map || {})
-    .filter(([k, v]) => typeof k === "string" && typeof v === "string" && k && v && k !== v)
+    .filter(
+      ([k, v]) =>
+        typeof k === "string" &&
+        typeof v === "string" &&
+        k &&
+        v &&
+        k !== v
+    )
     .sort((a, b) => b[0].length - a[0].length);
 
   for (const [from, to] of entries) {
-    out = out.replace(new RegExp(escapeRegExp(from), "g"), to);
+    out = out.replace(
+      new RegExp(escapeRegExp(from), "g"),
+      to
+    );
   }
+
+  return out;
+}
+
+// ------------------------------
+// 한국어 조사 보정
+// ------------------------------
+
+function hasFinalConsonant(word) {
+  const chars = [...String(word || "").trim()];
+
+  for (let i = chars.length - 1; i >= 0; i--) {
+    const code = chars[i].charCodeAt(0);
+
+    // 완성형 한글 범위
+    if (code >= 0xac00 && code <= 0xd7a3) {
+      return (code - 0xac00) % 28 !== 0;
+    }
+  }
+
+  return null;
+}
+
+function fixNameParticles(text, names) {
+  let out = String(text || "");
+
+  const uniqueNames = [...new Set(names || [])]
+    .map((name) => String(name || "").trim())
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+
+  for (const name of uniqueNames) {
+    const hasBatchim = hasFinalConsonant(name);
+
+    if (hasBatchim === null) continue;
+
+    const replacements = hasBatchim
+      ? [
+          ["가", "이"],
+          ["는", "은"],
+          ["를", "을"],
+          ["와", "과"],
+        ]
+      : [
+          ["이", "가"],
+          ["은", "는"],
+          ["을", "를"],
+          ["과", "와"],
+        ];
+
+    for (const [wrong, correct] of replacements) {
+      const pattern = new RegExp(
+        `${escapeRegExp(name)}${wrong}(?=\\s|[,.!?…"'’”)]|$)`,
+        "g"
+      );
+
+      out = out.replace(
+        pattern,
+        `${name}${correct}`
+      );
+    }
+  }
+
   return out;
 }
 
 function normalizeIntent(s) {
-  return clean(s).replace(/\s+/g, "").toLowerCase();
+  return clean(s)
+    .replace(/\s+/g, "")
+    .toLowerCase();
 }
 
 function isTodayKST(pubDateStr) {
   if (!pubDateStr) return false;
 
   const d = new Date(pubDateStr);
-  if (Number.isNaN(d.getTime())) return false;
+
+  if (Number.isNaN(d.getTime())) {
+    return false;
+  }
 
   const kstOffsetMs = 9 * 60 * 60 * 1000;
   const nowKST = new Date(Date.now() + kstOffsetMs);
@@ -66,9 +147,19 @@ function isTodayKST(pubDateStr) {
   const endKST = new Date(startKST);
   endKST.setDate(endKST.getDate() + 1);
 
-  const articleKST = new Date(d.getTime() + kstOffsetMs);
-  return articleKST >= startKST && articleKST < endKST;
+  const articleKST = new Date(
+    d.getTime() + kstOffsetMs
+  );
+
+  return (
+    articleKST >= startKST &&
+    articleKST < endKST
+  );
 }
+
+// ------------------------------
+// 사용자 입력 / 검색 카테고리
+// ------------------------------
 
 function buildQueryFromUtterance(utterance) {
   const u = normalizeIntent(utterance);
@@ -91,37 +182,176 @@ function buildQueryFromUtterance(utterance) {
 
   const categoryMap = {
     경제: {
-      queries: ["경제", "증시", "코스피", "코스닥", "금리", "환율", "물가", "부동산", "반도체"],
-      aliases: ["경제", "주식", "증시", "코스피", "코스닥", "환율", "금리", "물가", "부동산"],
+      queries: [
+        "경제",
+        "증시",
+        "코스피",
+        "코스닥",
+        "금리",
+        "환율",
+        "물가",
+        "부동산",
+        "반도체",
+      ],
+      aliases: [
+        "경제",
+        "주식",
+        "증시",
+        "코스피",
+        "코스닥",
+        "환율",
+        "금리",
+        "물가",
+        "부동산",
+      ],
     },
+
     사회: {
-      queries: ["사회", "사건 사고", "경찰", "법원", "교육", "노동", "의료", "재난"],
-      aliases: ["사회", "사건", "사고", "재난", "경찰", "법원", "교육", "노동", "복지", "의료"],
+      queries: [
+        "사회",
+        "사건 사고",
+        "경찰",
+        "법원",
+        "교육",
+        "노동",
+        "의료",
+        "재난",
+      ],
+      aliases: [
+        "사회",
+        "사건",
+        "사고",
+        "재난",
+        "경찰",
+        "법원",
+        "교육",
+        "노동",
+        "복지",
+        "의료",
+      ],
     },
+
     정치: {
-      queries: ["정치", "국회", "대통령실", "여야", "정당", "법안", "외교"],
-      aliases: ["정치", "국회", "대통령", "대통령실", "여야", "선거", "정당", "외교"],
+      queries: [
+        "정치",
+        "국회",
+        "대통령실",
+        "여야",
+        "정당",
+        "법안",
+        "외교",
+      ],
+      aliases: [
+        "정치",
+        "국회",
+        "대통령",
+        "대통령실",
+        "여야",
+        "선거",
+        "정당",
+        "외교",
+      ],
     },
+
     국제: {
-      queries: ["국제", "해외", "미국", "중국", "일본", "유럽", "우크라이나", "중동"],
-      aliases: ["국제", "해외", "미국", "중국", "일본", "유럽", "우크라이나", "중동"],
+      queries: [
+        "국제",
+        "해외",
+        "미국",
+        "중국",
+        "일본",
+        "유럽",
+        "우크라이나",
+        "중동",
+      ],
+      aliases: [
+        "국제",
+        "해외",
+        "미국",
+        "중국",
+        "일본",
+        "유럽",
+        "우크라이나",
+        "중동",
+      ],
     },
+
     과학: {
-      queries: ["과학", "인공지능", "AI", "기술", "우주", "연구", "반도체 기술"],
-      aliases: ["과학", "기술", "ai", "인공지능", "반도체", "우주", "연구", "논문"],
+      queries: [
+        "과학",
+        "인공지능",
+        "AI",
+        "기술",
+        "우주",
+        "연구",
+        "반도체 기술",
+      ],
+      aliases: [
+        "과학",
+        "기술",
+        "ai",
+        "인공지능",
+        "반도체",
+        "우주",
+        "연구",
+        "논문",
+      ],
     },
+
     연예: {
-      queries: ["연예", "아이돌", "배우", "가수", "드라마", "영화"],
-      aliases: ["연예", "셀럽", "아이돌", "배우", "가수", "드라마", "영화", "열애"],
+      queries: [
+        "연예",
+        "아이돌",
+        "배우",
+        "가수",
+        "드라마",
+        "영화",
+      ],
+      aliases: [
+        "연예",
+        "셀럽",
+        "아이돌",
+        "배우",
+        "가수",
+        "드라마",
+        "영화",
+        "열애",
+      ],
     },
+
     스포츠: {
-      queries: ["스포츠", "아시안게임", "국가대표", "축구", "야구", "농구", "배구", "e스포츠"],
-      aliases: ["스포츠", "축구", "야구", "농구", "배구", "e스포츠", "이스포츠", "국가대표", "아시안게임"],
+      queries: [
+        "스포츠",
+        "아시안게임",
+        "국가대표",
+        "축구",
+        "야구",
+        "농구",
+        "배구",
+        "e스포츠",
+      ],
+      aliases: [
+        "스포츠",
+        "축구",
+        "야구",
+        "농구",
+        "배구",
+        "e스포츠",
+        "이스포츠",
+        "국가대표",
+        "아시안게임",
+      ],
     },
   };
 
-  for (const [cat, cfg] of Object.entries(categoryMap)) {
-    if (cfg.aliases.some((word) => u.includes(word))) {
+  for (const [cat, cfg] of Object.entries(
+    categoryMap
+  )) {
+    if (
+      cfg.aliases.some((word) =>
+        u.includes(word)
+      )
+    ) {
       return {
         queries: cfg.queries,
         topic: cat,
@@ -137,7 +367,14 @@ function buildQueryFromUtterance(utterance) {
   };
 }
 
-async function fetchNaverNews(query, display = 50) {
+// ------------------------------
+// Naver News
+// ------------------------------
+
+async function fetchNaverNews(
+  query,
+  display = 50
+) {
   const url =
     "https://openapi.naver.com/v1/search/news.json?" +
     new URLSearchParams({
@@ -148,65 +385,145 @@ async function fetchNaverNews(query, display = 50) {
 
   const response = await fetch(url, {
     headers: {
-      "X-Naver-Client-Id": process.env.NAVER_CLIENT_ID || "",
-      "X-Naver-Client-Secret": process.env.NAVER_CLIENT_SECRET || "",
+      "X-Naver-Client-Id":
+        process.env.NAVER_CLIENT_ID || "",
+      "X-Naver-Client-Secret":
+        process.env.NAVER_CLIENT_SECRET || "",
     },
   });
 
   if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(`Naver ${response.status}: ${body.slice(0, 200)}`);
+    const body = await response
+      .text()
+      .catch(() => "");
+
+    throw new Error(
+      `Naver ${response.status}: ${body.slice(
+        0,
+        200
+      )}`
+    );
   }
 
-  const data = await response.json().catch(() => ({}));
-  const items = Array.isArray(data?.items) ? data.items : [];
+  const data = await response
+    .json()
+    .catch(() => ({}));
+
+  const items = Array.isArray(data?.items)
+    ? data.items
+    : [];
+
   if (!items.length) return null;
 
-  const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
+  const pickRandom = (arr) =>
+    arr[
+      Math.floor(
+        Math.random() * arr.length
+      )
+    ];
 
   const formatItem = (item) => ({
     title: clean(item?.title),
-    link: item?.originallink || item?.link || "",
+    link:
+      item?.originallink ||
+      item?.link ||
+      "",
     pubDate: item?.pubDate,
     searchQuery: query,
   });
 
-  const todayItems = items.filter((item) => isTodayKST(item?.pubDate));
-  if (todayItems.length) return formatItem(pickRandom(todayItems));
+  const todayItems = items.filter((item) =>
+    isTodayKST(item?.pubDate)
+  );
+
+  if (todayItems.length) {
+    return formatItem(
+      pickRandom(todayItems)
+    );
+  }
 
   const nowMs = Date.now();
-  const DAY = 24 * 60 * 60 * 1000;
+  const DAY =
+    24 * 60 * 60 * 1000;
 
-  const last24h = items.filter((item) => {
-    const d = new Date(item?.pubDate);
-    if (Number.isNaN(d.getTime())) return false;
+  const last24h = items.filter(
+    (item) => {
+      const d = new Date(
+        item?.pubDate
+      );
 
-    const age = nowMs - d.getTime();
-    return age >= 0 && age <= DAY;
-  });
+      if (
+        Number.isNaN(d.getTime())
+      ) {
+        return false;
+      }
 
-  if (last24h.length) return formatItem(pickRandom(last24h));
-  return formatItem(pickRandom(items));
+      const age =
+        nowMs - d.getTime();
+
+      return (
+        age >= 0 &&
+        age <= DAY
+      );
+    }
+  );
+
+  if (last24h.length) {
+    return formatItem(
+      pickRandom(last24h)
+    );
+  }
+
+  return formatItem(
+    pickRandom(items)
+  );
 }
 
-async function fetchNaverNewsWithFallback(queries, display = 50) {
-  const queryList = Array.isArray(queries) ? queries : [queries];
+async function fetchNaverNewsWithFallback(
+  queries,
+  display = 50
+) {
+  const queryList = Array.isArray(
+    queries
+  )
+    ? queries
+    : [queries];
 
   for (const query of queryList) {
     if (!query) continue;
 
     try {
-      console.log("[NAVER_SEARCH_TRY]", query);
-      const item = await fetchNaverNews(query, display);
+      console.log(
+        "[NAVER_SEARCH_TRY]",
+        query
+      );
+
+      const item =
+        await fetchNaverNews(
+          query,
+          display
+        );
 
       if (item) {
-        console.log("[NAVER_SEARCH_OK]", query, item.title);
+        console.log(
+          "[NAVER_SEARCH_OK]",
+          query,
+          item.title
+        );
+
         return item;
       }
 
-      console.log("[NAVER_SEARCH_EMPTY]", query);
+      console.log(
+        "[NAVER_SEARCH_EMPTY]",
+        query
+      );
     } catch (e) {
-      console.error("[NAVER_SEARCH_FAIL]", query, String(e));
+      console.error(
+        "[NAVER_SEARCH_FAIL]",
+        query,
+        String(e)
+      );
     }
   }
 
@@ -215,79 +532,199 @@ async function fetchNaverNewsWithFallback(queries, display = 50) {
 
 // ------------------------------
 // 기사 대표 이미지 추출
+//
 // 우선순위:
-// og:image -> twitter:image -> JSON-LD -> picture/source -> img
+// og:image
+// -> twitter:image
+// -> JSON-LD
+// -> picture/source
+// -> img
 // ------------------------------
 
-function normalizeImageUrl(rawUrl, articleUrl) {
+function normalizeImageUrl(
+  rawUrl,
+  articleUrl
+) {
   if (!rawUrl) return null;
 
-  const value = decodeEntities(String(rawUrl).trim());
-  if (!value || value.startsWith("data:") || value.startsWith("blob:")) return null;
+  const value = decodeEntities(
+    String(rawUrl).trim()
+  );
+
+  if (
+    !value ||
+    value.startsWith("data:") ||
+    value.startsWith("blob:")
+  ) {
+    return null;
+  }
 
   try {
-    const url = new URL(value, articleUrl);
-    if (!["http:", "https:"].includes(url.protocol)) return null;
+    const url = new URL(
+      value,
+      articleUrl
+    );
+
+    if (
+      !["http:", "https:"].includes(
+        url.protocol
+      )
+    ) {
+      return null;
+    }
+
     return url.href;
   } catch {
     return null;
   }
 }
 
-function looksLikeJunkImage(url, context = "") {
-  const text = `${url} ${context}`.toLowerCase();
+function looksLikeJunkImage(
+  url,
+  context = ""
+) {
+  const text =
+    `${url} ${context}`.toLowerCase();
 
   return /(^|[\/_.-])(logo|icon|favicon|sprite|avatar|profile|banner|advert|advertisement|adserver|tracking|pixel|spacer|blank|loading|placeholder)([\/_.?-]|$)/i.test(
     text
   );
 }
 
-function parseSrcset(srcset, articleUrl) {
+function parseSrcset(
+  srcset,
+  articleUrl
+) {
   if (!srcset) return [];
 
   return String(srcset)
     .split(",")
-    .map((part) => part.trim())
+    .map((part) =>
+      part.trim()
+    )
     .map((part) => {
-      const pieces = part.split(/\s+/);
-      const rawUrl = pieces[0];
-      const descriptor = pieces[1] || "";
-      const url = normalizeImageUrl(rawUrl, articleUrl);
+      const pieces =
+        part.split(/\s+/);
+
+      const rawUrl =
+        pieces[0];
+
+      const descriptor =
+        pieces[1] || "";
+
+      const url =
+        normalizeImageUrl(
+          rawUrl,
+          articleUrl
+        );
+
       if (!url) return null;
 
       let score = 0;
-      const w = descriptor.match(/^(\d+)w$/i);
-      const x = descriptor.match(/^([\d.]+)x$/i);
 
-      if (w) score = Number(w[1]);
-      else if (x) score = Number(x[1]) * 1000;
+      const w =
+        descriptor.match(
+          /^(\d+)w$/i
+        );
 
-      return { url, score };
+      const x =
+        descriptor.match(
+          /^([\d.]+)x$/i
+        );
+
+      if (w) {
+        score = Number(w[1]);
+      } else if (x) {
+        score =
+          Number(x[1]) * 1000;
+      }
+
+      return {
+        url,
+        score,
+      };
     })
     .filter(Boolean)
-    .sort((a, b) => b.score - a.score);
+    .sort(
+      (a, b) =>
+        b.score - a.score
+    );
 }
 
-function extractMetaImage(html, articleUrl) {
-  const metaTags = html.match(/<meta\b[^>]*>/gi) || [];
+function extractMetaImage(
+  html,
+  articleUrl
+) {
+  const metaTags =
+    html.match(
+      /<meta\b[^>]*>/gi
+    ) || [];
 
   const priorities = [
-    ["property", "og:image:secure_url"],
-    ["property", "og:image:url"],
-    ["property", "og:image"],
-    ["name", "twitter:image:src"],
-    ["name", "twitter:image"],
+    [
+      "property",
+      "og:image:secure_url",
+    ],
+    [
+      "property",
+      "og:image:url",
+    ],
+    [
+      "property",
+      "og:image",
+    ],
+    [
+      "name",
+      "twitter:image:src",
+    ],
+    [
+      "name",
+      "twitter:image",
+    ],
   ];
 
-  for (const [key, wanted] of priorities) {
-    for (const tag of metaTags) {
-      const keyMatch = tag.match(new RegExp(`\\b${key}\\s*=\\s*["']([^"']+)["']`, "i"));
-      if (!keyMatch || keyMatch[1].toLowerCase() !== wanted) continue;
+  for (
+    const [key, wanted]
+    of priorities
+  ) {
+    for (
+      const tag
+      of metaTags
+    ) {
+      const keyMatch =
+        tag.match(
+          new RegExp(
+            `\\b${key}\\s*=\\s*["']([^"']+)["']`,
+            "i"
+          )
+        );
 
-      const contentMatch = tag.match(/\bcontent\s*=\s*["']([^"']+)["']/i);
-      const url = normalizeImageUrl(contentMatch?.[1], articleUrl);
+      if (
+        !keyMatch ||
+        keyMatch[1].toLowerCase() !==
+          wanted
+      ) {
+        continue;
+      }
 
-      if (url && !looksLikeJunkImage(url, tag)) {
+      const contentMatch =
+        tag.match(
+          /\bcontent\s*=\s*["']([^"']+)["']/i
+        );
+
+      const url =
+        normalizeImageUrl(
+          contentMatch?.[1],
+          articleUrl
+        );
+
+      if (
+        url &&
+        !looksLikeJunkImage(
+          url,
+          tag
+        )
+      ) {
         return url;
       }
     }
@@ -296,124 +733,304 @@ function extractMetaImage(html, articleUrl) {
   return null;
 }
 
-function collectImagesFromJsonLd(value, out = []) {
+function collectImagesFromJsonLd(
+  value,
+  out = []
+) {
   if (!value) return out;
 
   if (Array.isArray(value)) {
-    for (const item of value) collectImagesFromJsonLd(item, out);
+    for (const item of value) {
+      collectImagesFromJsonLd(
+        item,
+        out
+      );
+    }
+
     return out;
   }
 
-  if (typeof value !== "object") return out;
+  if (
+    typeof value !== "object"
+  ) {
+    return out;
+  }
 
-  const imageKeys = ["image", "thumbnailUrl", "contentUrl"];
+  const imageKeys = [
+    "image",
+    "thumbnailUrl",
+    "contentUrl",
+  ];
 
   for (const key of imageKeys) {
-    const imageValue = value[key];
+    const imageValue =
+      value[key];
 
-    if (typeof imageValue === "string") {
+    if (
+      typeof imageValue ===
+      "string"
+    ) {
       out.push(imageValue);
-    } else if (Array.isArray(imageValue)) {
-      for (const item of imageValue) {
-        if (typeof item === "string") out.push(item);
-        else if (item && typeof item === "object") {
-          if (typeof item.url === "string") out.push(item.url);
-          if (typeof item.contentUrl === "string") out.push(item.contentUrl);
+    } else if (
+      Array.isArray(imageValue)
+    ) {
+      for (
+        const item
+        of imageValue
+      ) {
+        if (
+          typeof item ===
+          "string"
+        ) {
+          out.push(item);
+        } else if (
+          item &&
+          typeof item ===
+            "object"
+        ) {
+          if (
+            typeof item.url ===
+            "string"
+          ) {
+            out.push(
+              item.url
+            );
+          }
+
+          if (
+            typeof item.contentUrl ===
+            "string"
+          ) {
+            out.push(
+              item.contentUrl
+            );
+          }
         }
       }
-    } else if (imageValue && typeof imageValue === "object") {
-      if (typeof imageValue.url === "string") out.push(imageValue.url);
-      if (typeof imageValue.contentUrl === "string") out.push(imageValue.contentUrl);
+    } else if (
+      imageValue &&
+      typeof imageValue ===
+        "object"
+    ) {
+      if (
+        typeof imageValue.url ===
+        "string"
+      ) {
+        out.push(
+          imageValue.url
+        );
+      }
+
+      if (
+        typeof imageValue.contentUrl ===
+        "string"
+      ) {
+        out.push(
+          imageValue.contentUrl
+        );
+      }
     }
   }
 
-  if (value.primaryImageOfPage) {
-    collectImagesFromJsonLd(value.primaryImageOfPage, out);
+  if (
+    value.primaryImageOfPage
+  ) {
+    collectImagesFromJsonLd(
+      value.primaryImageOfPage,
+      out
+    );
   }
 
   if (value.mainEntity) {
-    collectImagesFromJsonLd(value.mainEntity, out);
+    collectImagesFromJsonLd(
+      value.mainEntity,
+      out
+    );
   }
 
   if (value["@graph"]) {
-    collectImagesFromJsonLd(value["@graph"], out);
+    collectImagesFromJsonLd(
+      value["@graph"],
+      out
+    );
   }
 
   return out;
 }
 
-function extractJsonLdImage(html, articleUrl) {
+function extractJsonLdImage(
+  html,
+  articleUrl
+) {
   const scriptRegex =
     /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
 
   let match;
 
-  while ((match = scriptRegex.exec(html)) !== null) {
-    const raw = String(match[1] || "").trim();
+  while (
+    (match =
+      scriptRegex.exec(html)) !==
+    null
+  ) {
+    const raw = String(
+      match[1] || ""
+    ).trim();
+
     if (!raw) continue;
 
     try {
-      const data = JSON.parse(raw);
-      const candidates = collectImagesFromJsonLd(data);
+      const data =
+        JSON.parse(raw);
 
-      for (const candidate of candidates) {
-        const url = normalizeImageUrl(candidate, articleUrl);
+      const candidates =
+        collectImagesFromJsonLd(
+          data
+        );
 
-        if (url && !looksLikeJunkImage(url)) {
+      for (
+        const candidate
+        of candidates
+      ) {
+        const url =
+          normalizeImageUrl(
+            candidate,
+            articleUrl
+          );
+
+        if (
+          url &&
+          !looksLikeJunkImage(
+            url
+          )
+        ) {
           return url;
         }
       }
     } catch {
-      // 일부 사이트는 깨진 JSON-LD를 넣기도 하므로 무시
+      // 일부 사이트는
+      // 깨진 JSON-LD를 넣기도 함
     }
   }
 
   return null;
 }
 
-function extractPictureImage(html, articleUrl) {
-  const pictureRegex = /<picture\b[^>]*>([\s\S]*?)<\/picture>/gi;
+function extractPictureImage(
+  html,
+  articleUrl
+) {
+  const pictureRegex =
+    /<picture\b[^>]*>([\s\S]*?)<\/picture>/gi;
+
   let match;
 
-  while ((match = pictureRegex.exec(html)) !== null) {
-    const block = match[1] || "";
+  while (
+    (match =
+      pictureRegex.exec(html)) !==
+    null
+  ) {
+    const block =
+      match[1] || "";
 
-    const sourceTags = block.match(/<source\b[^>]*>/gi) || [];
-    for (const tag of sourceTags) {
+    const sourceTags =
+      block.match(
+        /<source\b[^>]*>/gi
+      ) || [];
+
+    for (
+      const tag
+      of sourceTags
+    ) {
       const srcsetMatch =
-        tag.match(/\bsrcset\s*=\s*["']([^"']+)["']/i) ||
-        tag.match(/\bdata-srcset\s*=\s*["']([^"']+)["']/i);
+        tag.match(
+          /\bsrcset\s*=\s*["']([^"']+)["']/i
+        ) ||
+        tag.match(
+          /\bdata-srcset\s*=\s*["']([^"']+)["']/i
+        );
 
-      const candidates = parseSrcset(srcsetMatch?.[1], articleUrl);
+      const candidates =
+        parseSrcset(
+          srcsetMatch?.[1],
+          articleUrl
+        );
 
-      for (const candidate of candidates) {
-        if (!looksLikeJunkImage(candidate.url, tag)) {
+      for (
+        const candidate
+        of candidates
+      ) {
+        if (
+          !looksLikeJunkImage(
+            candidate.url,
+            tag
+          )
+        ) {
           return candidate.url;
         }
       }
     }
 
-    const imgTag = block.match(/<img\b[^>]*>/i)?.[0];
+    const imgTag =
+      block.match(
+        /<img\b[^>]*>/i
+      )?.[0];
+
     if (imgTag) {
       const srcsetMatch =
-        imgTag.match(/\bsrcset\s*=\s*["']([^"']+)["']/i) ||
-        imgTag.match(/\bdata-srcset\s*=\s*["']([^"']+)["']/i);
+        imgTag.match(
+          /\bsrcset\s*=\s*["']([^"']+)["']/i
+        ) ||
+        imgTag.match(
+          /\bdata-srcset\s*=\s*["']([^"']+)["']/i
+        );
 
-      const srcsetCandidates = parseSrcset(srcsetMatch?.[1], articleUrl);
-      for (const candidate of srcsetCandidates) {
-        if (!looksLikeJunkImage(candidate.url, imgTag)) {
+      const srcsetCandidates =
+        parseSrcset(
+          srcsetMatch?.[1],
+          articleUrl
+        );
+
+      for (
+        const candidate
+        of srcsetCandidates
+      ) {
+        if (
+          !looksLikeJunkImage(
+            candidate.url,
+            imgTag
+          )
+        ) {
           return candidate.url;
         }
       }
 
       const srcMatch =
-        imgTag.match(/\bdata-original\s*=\s*["']([^"']+)["']/i) ||
-        imgTag.match(/\bdata-lazy-src\s*=\s*["']([^"']+)["']/i) ||
-        imgTag.match(/\bdata-src\s*=\s*["']([^"']+)["']/i) ||
-        imgTag.match(/\bsrc\s*=\s*["']([^"']+)["']/i);
+        imgTag.match(
+          /\bdata-original\s*=\s*["']([^"']+)["']/i
+        ) ||
+        imgTag.match(
+          /\bdata-lazy-src\s*=\s*["']([^"']+)["']/i
+        ) ||
+        imgTag.match(
+          /\bdata-src\s*=\s*["']([^"']+)["']/i
+        ) ||
+        imgTag.match(
+          /\bsrc\s*=\s*["']([^"']+)["']/i
+        );
 
-      const url = normalizeImageUrl(srcMatch?.[1], articleUrl);
-      if (url && !looksLikeJunkImage(url, imgTag)) {
+      const url =
+        normalizeImageUrl(
+          srcMatch?.[1],
+          articleUrl
+        );
+
+      if (
+        url &&
+        !looksLikeJunkImage(
+          url,
+          imgTag
+        )
+      ) {
         return url;
       }
     }
@@ -422,39 +1039,104 @@ function extractPictureImage(html, articleUrl) {
   return null;
 }
 
-function extractImgImage(html, articleUrl) {
-  const imgTags = html.match(/<img\b[^>]*>/gi) || [];
+function extractImgImage(
+  html,
+  articleUrl
+) {
+  const imgTags =
+    html.match(
+      /<img\b[^>]*>/gi
+    ) || [];
 
-  for (const tag of imgTags) {
-    if (looksLikeJunkImage("", tag)) continue;
+  for (
+    const tag
+    of imgTags
+  ) {
+    if (
+      looksLikeJunkImage(
+        "",
+        tag
+      )
+    ) {
+      continue;
+    }
 
-    const width = Number(tag.match(/\bwidth\s*=\s*["']?(\d+)/i)?.[1] || 0);
-    const height = Number(tag.match(/\bheight\s*=\s*["']?(\d+)/i)?.[1] || 0);
+    const width = Number(
+      tag.match(
+        /\bwidth\s*=\s*["']?(\d+)/i
+      )?.[1] || 0
+    );
 
-    // 명시적으로 너무 작은 아이콘이면 제외
-    if ((width && width < 200) || (height && height < 120)) continue;
+    const height = Number(
+      tag.match(
+        /\bheight\s*=\s*["']?(\d+)/i
+      )?.[1] || 0
+    );
+
+    // 명시적으로 너무 작은
+    // 아이콘이면 제외
+    if (
+      (width && width < 200) ||
+      (height && height < 120)
+    ) {
+      continue;
+    }
 
     const srcsetMatch =
-      tag.match(/\bsrcset\s*=\s*["']([^"']+)["']/i) ||
-      tag.match(/\bdata-srcset\s*=\s*["']([^"']+)["']/i);
+      tag.match(
+        /\bsrcset\s*=\s*["']([^"']+)["']/i
+      ) ||
+      tag.match(
+        /\bdata-srcset\s*=\s*["']([^"']+)["']/i
+      );
 
-    const srcsetCandidates = parseSrcset(srcsetMatch?.[1], articleUrl);
+    const srcsetCandidates =
+      parseSrcset(
+        srcsetMatch?.[1],
+        articleUrl
+      );
 
-    for (const candidate of srcsetCandidates) {
-      if (!looksLikeJunkImage(candidate.url, tag)) {
+    for (
+      const candidate
+      of srcsetCandidates
+    ) {
+      if (
+        !looksLikeJunkImage(
+          candidate.url,
+          tag
+        )
+      ) {
         return candidate.url;
       }
     }
 
     const srcMatch =
-      tag.match(/\bdata-original\s*=\s*["']([^"']+)["']/i) ||
-      tag.match(/\bdata-lazy-src\s*=\s*["']([^"']+)["']/i) ||
-      tag.match(/\bdata-src\s*=\s*["']([^"']+)["']/i) ||
-      tag.match(/\bsrc\s*=\s*["']([^"']+)["']/i);
+      tag.match(
+        /\bdata-original\s*=\s*["']([^"']+)["']/i
+      ) ||
+      tag.match(
+        /\bdata-lazy-src\s*=\s*["']([^"']+)["']/i
+      ) ||
+      tag.match(
+        /\bdata-src\s*=\s*["']([^"']+)["']/i
+      ) ||
+      tag.match(
+        /\bsrc\s*=\s*["']([^"']+)["']/i
+      );
 
-    const url = normalizeImageUrl(srcMatch?.[1], articleUrl);
+    const url =
+      normalizeImageUrl(
+        srcMatch?.[1],
+        articleUrl
+      );
 
-    if (url && !looksLikeJunkImage(url, tag)) {
+    if (
+      url &&
+      !looksLikeJunkImage(
+        url,
+        tag
+      )
+    ) {
       return url;
     }
   }
@@ -462,73 +1144,157 @@ function extractImgImage(html, articleUrl) {
   return null;
 }
 
-async function getArticleImage(articleUrl, timeoutMs = 2200) {
-  if (!articleUrl || typeof articleUrl !== "string") return null;
+async function getArticleImage(
+  articleUrl,
+  timeoutMs = 2200
+) {
+  if (
+    !articleUrl ||
+    typeof articleUrl !==
+      "string"
+  ) {
+    return null;
+  }
 
   try {
-    const parsed = new URL(articleUrl);
-    if (!["http:", "https:"].includes(parsed.protocol)) return null;
+    const parsed =
+      new URL(articleUrl);
+
+    if (
+      !["http:", "https:"].includes(
+        parsed.protocol
+      )
+    ) {
+      return null;
+    }
   } catch {
     return null;
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const controller =
+    new AbortController();
+
+  const timer = setTimeout(
+    () => controller.abort(),
+    timeoutMs
+  );
 
   try {
-    const response = await fetch(articleUrl, {
-      signal: controller.signal,
-      redirect: "follow",
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152 Safari/537.36",
-        Accept: "text/html,application/xhtml+xml",
-        "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
-      },
-    });
+    const response =
+      await fetch(articleUrl, {
+        signal:
+          controller.signal,
+        redirect: "follow",
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152 Safari/537.36",
+
+          Accept:
+            "text/html,application/xhtml+xml",
+
+          "Accept-Language":
+            "ko-KR,ko;q=0.9,en;q=0.8",
+        },
+      });
 
     if (!response.ok) {
-      console.log("[ARTICLE_FETCH_FAIL]", response.status, articleUrl);
+      console.log(
+        "[ARTICLE_FETCH_FAIL]",
+        response.status,
+        articleUrl
+      );
+
       return null;
     }
 
-    const html = await response.text().catch(() => "");
-    if (!html) return null;
+    const html =
+      await response
+        .text()
+        .catch(() => "");
+
+    if (!html) {
+      return null;
+    }
 
     const extractors = [
-      ["META", extractMetaImage],
-      ["JSON_LD", extractJsonLdImage],
-      ["PICTURE", extractPictureImage],
-      ["IMG", extractImgImage],
+      [
+        "META",
+        extractMetaImage,
+      ],
+      [
+        "JSON_LD",
+        extractJsonLdImage,
+      ],
+      [
+        "PICTURE",
+        extractPictureImage,
+      ],
+      [
+        "IMG",
+        extractImgImage,
+      ],
     ];
 
-    for (const [name, extractor] of extractors) {
-      const imageUrl = extractor(html, articleUrl);
+    for (
+      const [name, extractor]
+      of extractors
+    ) {
+      const imageUrl =
+        extractor(
+          html,
+          articleUrl
+        );
 
       if (imageUrl) {
-        console.log(`[ARTICLE_IMAGE_${name}]`, imageUrl);
+        console.log(
+          `[ARTICLE_IMAGE_${name}]`,
+          imageUrl
+        );
+
         return imageUrl;
       }
     }
 
-    console.log("[ARTICLE_IMAGE_NONE]", articleUrl);
+    console.log(
+      "[ARTICLE_IMAGE_NONE]",
+      articleUrl
+    );
+
     return null;
   } catch (e) {
-    if (String(e?.name) === "AbortError") {
-      console.log("[ARTICLE_IMAGE_TIMEOUT]", articleUrl);
+    if (
+      String(e?.name) ===
+      "AbortError"
+    ) {
+      console.log(
+        "[ARTICLE_IMAGE_TIMEOUT]",
+        articleUrl
+      );
+
       return null;
     }
 
-    console.log("[ARTICLE_IMAGE_ERROR]", String(e));
+    console.log(
+      "[ARTICLE_IMAGE_ERROR]",
+      String(e)
+    );
+
     return null;
   } finally {
     clearTimeout(timer);
   }
 }
 
-function makeProxyImageUrl(imageUrl) {
-  if (!imageUrl) return null;
-  return `${BASE_URL}/api/image-proxy?url=${encodeURIComponent(imageUrl)}`;
+function makeProxyImageUrl(
+  imageUrl
+) {
+  if (!imageUrl) {
+    return null;
+  }
+
+  return `${BASE_URL}/api/image-proxy?url=${encodeURIComponent(
+    imageUrl
+  )}`;
 }
 
 // ------------------------------
@@ -546,70 +1312,142 @@ function normalizeForCompare(s) {
 
 async function callOpenAI(
   messages,
-  { temperature = 0.4, max_tokens = 220, timeoutMs = 8000 } = {}
+  {
+    temperature = 0.4,
+    max_tokens = 220,
+    timeoutMs = 8000,
+  } = {}
 ) {
-  const key = process.env.OPENAI_API_KEY || "";
+  const key =
+    process.env.OPENAI_API_KEY ||
+    "";
 
   if (!key) {
-    return { ok: false, text: "", why: "OPENAI_API_KEY 없음" };
+    return {
+      ok: false,
+      text: "",
+      why:
+        "OPENAI_API_KEY 없음",
+    };
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const controller =
+    new AbortController();
+
+  const timer = setTimeout(
+    () => controller.abort(),
+    timeoutMs
+  );
 
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        temperature,
-        max_tokens,
-        messages,
-      }),
-    });
+    const response =
+      await fetch(
+        "https://api.openai.com/v1/chat/completions",
+        {
+          method: "POST",
+
+          signal:
+            controller.signal,
+
+          headers: {
+            Authorization:
+              `Bearer ${key}`,
+
+            "Content-Type":
+              "application/json",
+          },
+
+          body: JSON.stringify({
+            model:
+              "gpt-4o-mini",
+
+            temperature,
+
+            max_tokens,
+
+            messages,
+          }),
+        }
+      );
 
     if (!response.ok) {
-      const body = await response.text().catch(() => "");
+      const body =
+        await response
+          .text()
+          .catch(() => "");
+
       return {
         ok: false,
         text: "",
-        why: `OpenAI ${response.status}: ${body.slice(0, 200)}`,
+        why:
+          `OpenAI ${response.status}: ${body.slice(
+            0,
+            200
+          )}`,
       };
     }
 
-    const data = await response.json().catch(() => ({}));
-    const output = clean(data?.choices?.[0]?.message?.content || "");
+    const data =
+      await response
+        .json()
+        .catch(() => ({}));
+
+    const output = clean(
+      data?.choices?.[0]
+        ?.message?.content || ""
+    );
 
     if (!output) {
-      return { ok: false, text: "", why: "OpenAI 응답 비었음" };
-    }
-
-    return { ok: true, text: output, why: "" };
-  } catch (e) {
-    if (String(e?.name) === "AbortError") {
       return {
         ok: false,
         text: "",
-        why: `OpenAI 타임아웃(${timeoutMs}ms)`,
+        why:
+          "OpenAI 응답 비었음",
+      };
+    }
+
+    return {
+      ok: true,
+      text: output,
+      why: "",
+    };
+  } catch (e) {
+    if (
+      String(e?.name) ===
+      "AbortError"
+    ) {
+      return {
+        ok: false,
+        text: "",
+        why:
+          `OpenAI 타임아웃(${timeoutMs}ms)`,
       };
     }
 
     return {
       ok: false,
       text: "",
-      why: `OpenAI 호출 오류: ${String(e).slice(0, 200)}`,
+      why:
+        `OpenAI 호출 오류: ${String(
+          e
+        ).slice(0, 200)}`,
     };
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function buildNameMap(title) {
+// ------------------------------
+// 1단계: 인명 치환 맵
+//
+// 핵심:
+// 이름 자체에 "-이" 붙이지 않음.
+// 순수 이름만 반환.
+// ------------------------------
+
+async function buildNameMap(
+  title
+) {
   const systemPrompt = `
 너는 한국어 뉴스 제목에서 "사람 이름(인명)"만 찾아 치환 맵을 만드는 도구야.
 출력은 JSON 하나만. 다른 말 절대 금지.
@@ -618,76 +1456,129 @@ async function buildNameMap(title) {
 - 입력 제목에 등장하는 사람 이름만 대상으로 한다.
 - 기관명, 지명, 브랜드, 단체는 제외한다.
 - 한국인 이름이 성+이름으로 나오면 성을 제거하고 이름만 남긴다.
-- 이름 끝 글자에 받침이 있으면 "이"를 붙인다. 받침이 없으면 붙이지 않는다.
-- 직책/호칭이 붙은 표현도 같은 사람이라면 함께 매핑한다.
+- 이름 뒤에 "이", "가", "은", "는", "을", "를", "과", "와" 같은 조사를 절대 붙이지 않는다.
+- 친근하게 만들기 위해 이름 자체에 "-이"를 추가하지 않는다.
+- 반드시 순수한 이름 부분만 반환한다.
+- 직책/호칭이 붙은 표현도 같은 사람이라면 함께 매핑할 수 있다.
+- 다만 치환 결과에는 직책이나 호칭을 포함하지 않는다.
 - 치환 대상이 없으면 {}만 출력한다.
 
 예:
-윤석열 -> 석열이
-문재인 -> 재인이
-이재명 -> 재명이
+윤석열 -> 석열
+문재인 -> 재인
+이재명 -> 재명
 김찬희 -> 찬희
 박지우 -> 지우
-유진 -> 유진이
+김영수 -> 영수
+유진 -> 유진
 `;
 
-  const result = await callOpenAI(
-    [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: title },
-    ],
-    {
-      temperature: 0.2,
-      max_tokens: 260,
-      timeoutMs: 8000,
-    }
-  );
+  const result =
+    await callOpenAI(
+      [
+        {
+          role: "system",
+          content:
+            systemPrompt,
+        },
+
+        {
+          role: "user",
+          content: title,
+        },
+      ],
+      {
+        temperature: 0.2,
+        max_tokens: 260,
+        timeoutMs: 8000,
+      }
+    );
 
   if (!result.ok) {
-    return { ok: false, map: {}, why: result.why };
+    return {
+      ok: false,
+      map: {},
+      why: result.why,
+    };
   }
 
   try {
-    const jsonText = result.text
-      .replace(/^```json\s*/i, "")
-      .replace(/^```\s*/i, "")
-      .replace(/```$/i, "")
-      .trim();
+    const jsonText =
+      result.text
+        .replace(
+          /^```json\s*/i,
+          ""
+        )
+        .replace(
+          /^```\s*/i,
+          ""
+        )
+        .replace(
+          /```$/i,
+          ""
+        )
+        .trim();
 
-    const obj = JSON.parse(jsonText);
+    const obj =
+      JSON.parse(jsonText);
 
-    if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+    if (
+      !obj ||
+      typeof obj !==
+        "object" ||
+      Array.isArray(obj)
+    ) {
       return {
         ok: false,
         map: {},
-        why: "인명맵 JSON 형식이 아님",
+        why:
+          "인명맵 JSON 형식이 아님",
       };
     }
 
     const map = {};
 
-    for (const [key, value] of Object.entries(obj)) {
+    for (
+      const [key, value]
+      of Object.entries(obj)
+    ) {
       if (
-        typeof key === "string" &&
-        typeof value === "string" &&
+        typeof key ===
+          "string" &&
+        typeof value ===
+          "string" &&
         key.trim() &&
         value.trim()
       ) {
-        map[key.trim()] = value.trim();
+        map[key.trim()] =
+          value.trim();
       }
     }
 
-    return { ok: true, map, why: "" };
+    return {
+      ok: true,
+      map,
+      why: "",
+    };
   } catch (e) {
     return {
       ok: false,
       map: {},
-      why: `인명맵 JSON 파싱 실패: ${String(e).slice(0, 120)}`,
+      why:
+        `인명맵 JSON 파싱 실패: ${String(
+          e
+        ).slice(0, 120)}`,
     };
   }
 }
 
-async function toNewsilkoStyle(titleAfterReplace) {
+// ------------------------------
+// 2단계: 뉴스일꼬 말투
+// ------------------------------
+
+async function toNewsilkoStyle(
+  titleAfterReplace
+) {
   const systemPrompt = `
 너는 "뉴스일꼬"라는 츤데레 고양이야 🐱
 
@@ -705,12 +1596,50 @@ async function toNewsilkoStyle(titleAfterReplace) {
 - 정보의 핵심은 유지할 것
 - 약 40~95자
 - 이미 치환된 사람 이름을 다시 원래 성명으로 복구하지 말 것
+
+한국어 조사 규칙:
+- 사람 이름 뒤에 붙는 조사는 반드시 최종 이름의 마지막 음절 받침 여부에 맞춰 사용한다.
+- 받침이 있으면: 이 / 은 / 을 / 과
+- 받침이 없으면: 가 / 는 / 를 / 와
+- 이름 자체에 친근함을 이유로 "-이"를 추가하지 않는다.
+- 기존 뉴스 제목의 조사를 기계적으로 복사하지 않는다.
+- 완성된 문장 전체를 읽고 자연스러운 한국어 문법에 맞게 조사를 선택한다.
+
+예:
+영수 + 주격 → 영수가
+영수 + 보조사 → 영수는
+영수 + 목적격 → 영수를
+영수 + 함께 → 영수와
+
+재명 + 주격 → 재명이
+재명 + 보조사 → 재명은
+재명 + 목적격 → 재명을
+재명 + 함께 → 재명과
+
+잘못된 예:
+영수이
+영수은
+영수을
+영수과
+재명가
+재명는
+재명를
+재명와
 `;
 
   return await callOpenAI(
     [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: titleAfterReplace },
+      {
+        role: "system",
+        content:
+          systemPrompt,
+      },
+
+      {
+        role: "user",
+        content:
+          titleAfterReplace,
+      },
     ],
     {
       temperature: 0.95,
@@ -720,13 +1649,28 @@ async function toNewsilkoStyle(titleAfterReplace) {
   );
 }
 
-async function makeCasual(title) {
-  const nameMap = await buildNameMap(title);
-  const replacedTitle = nameMap.ok
-    ? applyReplacements(title, nameMap.map)
-    : title;
+// ------------------------------
+// 인명 치환 + 말투 변환
+// ------------------------------
 
-  const styled = await toNewsilkoStyle(replacedTitle);
+async function makeCasual(
+  title
+) {
+  const nameMap =
+    await buildNameMap(title);
+
+  const replacedTitle =
+    nameMap.ok
+      ? applyReplacements(
+          title,
+          nameMap.map
+        )
+      : title;
+
+  const styled =
+    await toNewsilkoStyle(
+      replacedTitle
+    );
 
   if (!styled.ok) {
     return {
@@ -734,35 +1678,67 @@ async function makeCasual(title) {
       text: "",
       why: styled.why,
       replacedTitle,
-      nameMapOk: nameMap.ok,
-      nameMapWhy: nameMap.why,
+      nameMapOk:
+        nameMap.ok,
+      nameMapWhy:
+        nameMap.why,
     };
   }
 
-  const original = normalizeForCompare(replacedTitle);
-  const result = normalizeForCompare(styled.text);
+  // GPT 출력 후 조사 한 번 더 검사
+  const fixedText =
+    fixNameParticles(
+      styled.text,
+      Object.values(
+        nameMap.map || {}
+      )
+    );
+
+  const original =
+    normalizeForCompare(
+      replacedTitle
+    );
+
+  const result =
+    normalizeForCompare(
+      fixedText
+    );
 
   const tooSimilar =
     result &&
     original &&
-    (result === original ||
-      result.includes(original) ||
-      original.includes(result));
+    (
+      result === original ||
+      result.includes(
+        original
+      ) ||
+      original.includes(
+        result
+      )
+    );
 
   if (tooSimilar) {
-    console.log("[STYLE_SIMILAR]", {
-      original: replacedTitle,
-      result: styled.text,
-    });
+    console.log(
+      "[STYLE_SIMILAR]",
+      {
+        original:
+          replacedTitle,
+
+        result:
+          fixedText,
+      }
+    );
   }
 
   return {
     ok: true,
-    text: styled.text,
+    text: fixedText,
     why: "",
     replacedTitle,
-    nameMapOk: nameMap.ok,
-    nameMapWhy: nameMap.why,
+    nameMapOk:
+      nameMap.ok,
+    nameMapWhy:
+      nameMap.why,
   };
 }
 
@@ -779,7 +1755,12 @@ function tsunTitle() {
     "기사 보러 가. 안 보면 손해일지도 😼",
   ];
 
-  return titles[Math.floor(Math.random() * titles.length)];
+  return titles[
+    Math.floor(
+      Math.random() *
+        titles.length
+    )
+  ];
 }
 
 function tsunDesc() {
@@ -790,60 +1771,118 @@ function tsunDesc() {
     "몰라. 궁금하면 봐.",
   ];
 
-  return descriptions[Math.floor(Math.random() * descriptions.length)];
+  return descriptions[
+    Math.floor(
+      Math.random() *
+        descriptions.length
+    )
+  ];
 }
 
 function quickReplies() {
-  const make = (label, messageText) => ({
+  const make = (
+    label,
+    messageText
+  ) => ({
     action: "message",
     label,
     messageText,
   });
 
   return [
-    make("오늘 뉴스", "뉴스"),
-    make("경제", "경제"),
-    make("사회", "사회"),
-    make("정치", "정치"),
-    make("국제", "국제"),
-    make("과학", "과학"),
-    make("연예", "연예"),
-    make("스포츠", "스포츠"),
+    make(
+      "오늘 뉴스",
+      "뉴스"
+    ),
+    make(
+      "경제",
+      "경제"
+    ),
+    make(
+      "사회",
+      "사회"
+    ),
+    make(
+      "정치",
+      "정치"
+    ),
+    make(
+      "국제",
+      "국제"
+    ),
+    make(
+      "과학",
+      "과학"
+    ),
+    make(
+      "연예",
+      "연예"
+    ),
+    make(
+      "스포츠",
+      "스포츠"
+    ),
   ];
 }
 
-function kakaoCard(text, link, thumbUrl = THUMBNAIL_URL) {
-  const imageUrl = thumbUrl || THUMBNAIL_URL;
+function kakaoCard(
+  text,
+  link,
+  thumbUrl = THUMBNAIL_URL
+) {
+  const imageUrl =
+    thumbUrl ||
+    THUMBNAIL_URL;
 
   return {
     version: "2.0",
+
     template: {
       outputs: [
         {
-          simpleText: { text },
+          simpleText: {
+            text,
+          },
         },
+
         {
           basicCard: {
             thumbnail: {
               imageUrl,
+
               link: {
-                web_url: link,
-                mobile_web_url: link,
+                web_url:
+                  link,
+
+                mobile_web_url:
+                  link,
               },
             },
-            title: tsunTitle(),
-            description: tsunDesc(),
+
+            title:
+              tsunTitle(),
+
+            description:
+              tsunDesc(),
+
             buttons: [
               {
-                action: "webLink",
-                label: "기사보기",
-                webLinkUrl: link,
+                action:
+                  "webLink",
+
+                label:
+                  "기사보기",
+
+                webLinkUrl:
+                  link,
               },
             ],
           },
         },
       ],
-      quickReplies: quickReplies(),
+
+      quickReplies:
+        quickReplies(),
     },
   };
 }
@@ -851,33 +1890,66 @@ function kakaoCard(text, link, thumbUrl = THUMBNAIL_URL) {
 function kakaoText(msg) {
   return {
     version: "2.0",
+
     template: {
       outputs: [
         {
-          simpleText: { text: msg },
+          simpleText: {
+            text: msg,
+          },
         },
       ],
-      quickReplies: quickReplies(),
+
+      quickReplies:
+        quickReplies(),
     },
   };
 }
 
-export default async function handler(req, res) {
+// ------------------------------
+// Main handler
+// ------------------------------
+
+export default async function handler(
+  req,
+  res
+) {
   try {
-    const utterance = getUtterance(req);
+    const utterance =
+      getUtterance(req);
 
-    console.log("[USER_INPUT]", utterance);
+    console.log(
+      "[USER_INPUT]",
+      utterance
+    );
 
-    const { queries, topic, mode } =
-      buildQueryFromUtterance(utterance);
+    const {
+      queries,
+      topic,
+      mode,
+    } =
+      buildQueryFromUtterance(
+        utterance
+      );
 
-    console.log("[SEARCH_MODE]", mode, queries);
+    console.log(
+      "[SEARCH_MODE]",
+      mode,
+      queries
+    );
 
     const item =
-      await fetchNaverNewsWithFallback(queries, 50);
+      await fetchNaverNewsWithFallback(
+        queries,
+        50
+      );
 
     if (!item) {
-      console.log("[NO_ARTICLE]", topic, queries);
+      console.log(
+        "[NO_ARTICLE]",
+        topic,
+        queries
+      );
 
       return res
         .status(200)
@@ -888,36 +1960,71 @@ export default async function handler(req, res) {
         );
     }
 
-    console.log("[ARTICLE_SELECTED]", {
-      topic,
-      query: item.searchQuery,
-      title: item.title,
-      link: item.link,
-    });
+    console.log(
+      "[ARTICLE_SELECTED]",
+      {
+        topic,
+        query:
+          item.searchQuery,
+        title:
+          item.title,
+        link:
+          item.link,
+      }
+    );
 
     // 기사 이미지와 GPT를 동시에 실행
-    const imagePromise = getArticleImage(item.link, 2200);
-    const gptPromise = makeCasual(item.title);
+    const imagePromise =
+      getArticleImage(
+        item.link,
+        2200
+      );
 
-    const [articleImage, gptResult] =
-      await Promise.all([imagePromise, gptPromise]);
+    const gptPromise =
+      makeCasual(
+        item.title
+      );
 
-    // 기사 이미지는 프록시를 통해 카카오에 전달
-    const thumbUrl = articleImage
-      ? makeProxyImageUrl(articleImage)
-      : THUMBNAIL_URL;
+    const [
+      articleImage,
+      gptResult,
+    ] =
+      await Promise.all([
+        imagePromise,
+        gptPromise,
+      ]);
+
+    // 기사 이미지가 있으면
+    // 프록시 URL 사용
+    const thumbUrl =
+      articleImage
+        ? makeProxyImageUrl(
+            articleImage
+          )
+        : THUMBNAIL_URL;
 
     console.log(
       "[THUMBNAIL_SELECTED]",
-      articleImage ? "ARTICLE_PROXY" : "DEFAULT_IMAGE",
+      articleImage
+        ? "ARTICLE_PROXY"
+        : "DEFAULT_IMAGE",
       thumbUrl
     );
 
-    if (!gptResult?.ok) {
-      console.error("[OPENAI_FAIL]", gptResult?.why, {
-        nameMapOk: gptResult?.nameMapOk,
-        nameMapWhy: gptResult?.nameMapWhy,
-      });
+    if (
+      !gptResult?.ok
+    ) {
+      console.error(
+        "[OPENAI_FAIL]",
+        gptResult?.why,
+        {
+          nameMapOk:
+            gptResult?.nameMapOk,
+
+          nameMapWhy:
+            gptResult?.nameMapWhy,
+        }
+      );
 
       return res
         .status(200)
@@ -940,7 +2047,10 @@ export default async function handler(req, res) {
         )
       );
   } catch (e) {
-    console.error("[NEWSILKO_ERR]", e);
+    console.error(
+      "[NEWSILKO_ERR]",
+      e
+    );
 
     return res
       .status(200)
