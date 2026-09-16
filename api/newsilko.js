@@ -5,28 +5,22 @@
 // 2) 카테고리 -> 여러 검색어를 순서대로 시도
 // 3) 오늘(KST) 기사 우선 -> 최근 24시간 -> 최신 기사 fallback
 // 4) GPT 2단계: 인명 치환 -> 뉴스일꼬 말투 변환
-// 5) Kakao basicCard + 기사보기 + quickReplies
-// 6) 기사 og:image 수집 제거: 응답 안정성 우선
+// 5) 기사 페이지 대표 이미지(og:image 등)를 썸네일로 사용
+// 6) 기사 이미지를 못 찾으면 뉴스일꼬 기본 썸네일 사용
+// 7) Kakao basicCard + 기사보기 + quickReplies
 
-// --------------------------------------------------
-// 썸네일
-// --------------------------------------------------
-//
-// 나중에 public/newsilko-thumbnail.png를 올리면
-// 아래 주소로 변경하면 됨.
-//
-// const THUMBNAIL_URL =
-//   "https://newsilko.vercel.app/newsilko-thumbnail.png";
-//
-// 일단 기존 이미지 유지
-//
+
+// ==================================================
+// 기본 썸네일
+// ==================================================
+
 const THUMBNAIL_URL =
-  "https://upload.wikimedia.org/wikipedia/commons/7/7e/CatB4SVG.png";
+  "https://newsilko.vercel.app/newsilko-thumbnail.png";
 
 
-// --------------------------------------------------
+// ==================================================
 // UTIL
-// --------------------------------------------------
+// ==================================================
 
 function stripHtml(s) {
   return String(s || "")
@@ -99,12 +93,14 @@ function normalizeIntent(s) {
 }
 
 
-// --------------------------------------------------
+// ==================================================
 // 오늘 날짜 판별 (KST)
-// --------------------------------------------------
+// ==================================================
 
 function isTodayKST(pubDateStr) {
-  if (!pubDateStr) return false;
+  if (!pubDateStr) {
+    return false;
+  }
 
   const d = new Date(pubDateStr);
 
@@ -115,26 +111,49 @@ function isTodayKST(pubDateStr) {
   const kstOffsetMs = 9 * 60 * 60 * 1000;
 
   const now = new Date();
-  const nowKST = new Date(now.getTime() + kstOffsetMs);
 
-  const startKST = new Date(nowKST);
-  startKST.setHours(0, 0, 0, 0);
+  const nowKST =
+    new Date(
+      now.getTime() + kstOffsetMs
+    );
 
-  const endKST = new Date(startKST);
-  endKST.setDate(endKST.getDate() + 1);
+  const startKST =
+    new Date(nowKST);
 
-  const dKST = new Date(d.getTime() + kstOffsetMs);
+  startKST.setHours(
+    0,
+    0,
+    0,
+    0
+  );
 
-  return dKST >= startKST && dKST < endKST;
+  const endKST =
+    new Date(startKST);
+
+  endKST.setDate(
+    endKST.getDate() + 1
+  );
+
+  const articleKST =
+    new Date(
+      d.getTime() + kstOffsetMs
+    );
+
+  return (
+    articleKST >= startKST &&
+    articleKST < endKST
+  );
 }
 
 
-// --------------------------------------------------
+// ==================================================
 // 검색어 라우터
-// --------------------------------------------------
+// ==================================================
 
 function buildQueryFromUtterance(utterance) {
-  const u = normalizeIntent(utterance);
+  const u =
+    normalizeIntent(utterance);
+
 
   const isGeneral =
     !u ||
@@ -145,26 +164,18 @@ function buildQueryFromUtterance(utterance) {
     u === "아무거나";
 
 
-  // 일반 뉴스
   if (isGeneral) {
     return {
       queries: [
         "속보",
-        "뉴스"
+        "뉴스",
       ],
-      mode: "general",
       topic: "뉴스",
+      mode: "general",
     };
   }
 
 
-  // 카테고리
-  //
-  // 네이버 뉴스 API에
-  // "스포츠 (축구 OR 야구 ...)"
-  // 같은 검색문을 넣지 않고,
-  // 검색어를 하나씩 시도한다.
-  //
   const categoryMap = {
 
     경제: {
@@ -175,6 +186,7 @@ function buildQueryFromUtterance(utterance) {
         "코스닥",
         "금리",
         "환율",
+        "물가",
         "부동산",
         "반도체",
       ],
@@ -187,8 +199,8 @@ function buildQueryFromUtterance(utterance) {
         "코스닥",
         "환율",
         "금리",
-        "부동산",
         "물가",
+        "부동산",
       ],
     },
 
@@ -344,75 +356,103 @@ function buildQueryFromUtterance(utterance) {
   };
 
 
-  for (const [cat, cfg] of Object.entries(categoryMap)) {
+  for (
+    const [cat, cfg]
+    of Object.entries(categoryMap)
+  ) {
 
-    if (cfg.aliases.some((word) => u.includes(word))) {
+    if (
+      cfg.aliases.some(
+        (word) => u.includes(word)
+      )
+    ) {
 
       return {
         queries: cfg.queries,
-        mode: `category:${cat}`,
         topic: cat,
+        mode: `category:${cat}`,
       };
 
     }
+
   }
 
 
-  // 카테고리에 없는 자유 검색
-  // 예: "삼성전자", "나고야", 특정 인물
+  // 자유 검색
+  // 예: 삼성전자 / 나고야 / 특정 인물
   return {
-    queries: [clean(utterance)],
-    mode: "free",
+    queries: [
+      clean(utterance)
+    ],
     topic: "검색",
+    mode: "free",
   };
 }
 
 
-// --------------------------------------------------
+// ==================================================
 // NAVER NEWS API
-// --------------------------------------------------
+// ==================================================
 
-async function fetchNaverNews(query, display = 50) {
+async function fetchNaverNews(
+  query,
+  display = 50
+) {
 
   const url =
     "https://openapi.naver.com/v1/search/news.json?" +
     new URLSearchParams({
+
       query,
-      display: String(display),
-      sort: "date",
+
+      display:
+        String(display),
+
+      sort:
+        "date",
+
     }).toString();
 
 
-  const r = await fetch(url, {
-    headers: {
-      "X-Naver-Client-Id":
-        process.env.NAVER_CLIENT_ID || "",
+  const response =
+    await fetch(url, {
 
-      "X-Naver-Client-Secret":
-        process.env.NAVER_CLIENT_SECRET || "",
-    },
-  });
+      headers: {
+
+        "X-Naver-Client-Id":
+          process.env.NAVER_CLIENT_ID || "",
+
+        "X-Naver-Client-Secret":
+          process.env.NAVER_CLIENT_SECRET || "",
+
+      },
+
+    });
 
 
-  if (!r.ok) {
+  if (!response.ok) {
 
     const body =
-      await r.text().catch(() => "");
+      await response
+        .text()
+        .catch(() => "");
 
     throw new Error(
-      `Naver ${r.status}: ${body.slice(0, 200)}`
+      `Naver ${response.status}: ${body.slice(0, 200)}`
     );
 
   }
 
 
-  const j =
-    await r.json().catch(() => ({}));
+  const data =
+    await response
+      .json()
+      .catch(() => ({}));
 
 
   const items =
-    Array.isArray(j?.items)
-      ? j.items
+    Array.isArray(data?.items)
+      ? data.items
       : [];
 
 
@@ -421,92 +461,136 @@ async function fetchNaverNews(query, display = 50) {
   }
 
 
-  const pickFrom = (arr) =>
-    arr[Math.floor(Math.random() * arr.length)];
+  const pickRandom =
+    (arr) =>
+      arr[
+        Math.floor(
+          Math.random() *
+          arr.length
+        )
+      ];
 
 
-  // ---------------------------
-  // 1. 오늘 기사 우선
-  // ---------------------------
+  function formatItem(item) {
 
-  const todays =
-    items.filter((item) =>
-      isTodayKST(item?.pubDate)
-    );
+    // 가능하면 언론사 원문 링크 사용
+    const link =
+      item?.originallink ||
+      item?.link ||
+      "";
 
-
-  if (todays.length) {
-
-    const pick = pickFrom(todays);
 
     return {
-      title: clean(pick.title),
-      link: pick.link,
-      pubDate: pick.pubDate,
-      searchQuery: query,
+
+      title:
+        clean(item?.title),
+
+      link,
+
+      pubDate:
+        item?.pubDate,
+
+      searchQuery:
+        query,
+
     };
 
   }
 
 
-  // ---------------------------
-  // 2. 최근 24시간
-  // ---------------------------
+  // ---------------------------------
+  // 1. 오늘 기사
+  // ---------------------------------
 
-  const nowMs = Date.now();
+  const todayItems =
+    items.filter(
+      (item) =>
+        isTodayKST(item?.pubDate)
+    );
+
+
+  if (todayItems.length) {
+
+    return formatItem(
+      pickRandom(todayItems)
+    );
+
+  }
+
+
+  // ---------------------------------
+  // 2. 최근 24시간
+  // ---------------------------------
+
+  const nowMs =
+    Date.now();
+
+
   const DAY =
-    24 * 60 * 60 * 1000;
+    24 *
+    60 *
+    60 *
+    1000;
 
 
   const last24h =
-    items.filter((item) => {
+    items.filter(
+      (item) => {
 
-      const d =
-        new Date(item?.pubDate);
+        const d =
+          new Date(
+            item?.pubDate
+          );
 
-      if (Number.isNaN(d.getTime())) {
-        return false;
+
+        if (
+          Number.isNaN(
+            d.getTime()
+          )
+        ) {
+
+          return false;
+
+        }
+
+
+        const age =
+          nowMs -
+          d.getTime();
+
+
+        return (
+          age >= 0 &&
+          age <= DAY
+        );
+
       }
-
-      return (
-        nowMs - d.getTime() <= DAY
-      );
-
-    });
+    );
 
 
   if (last24h.length) {
 
-    const pick = pickFrom(last24h);
-
-    return {
-      title: clean(pick.title),
-      link: pick.link,
-      pubDate: pick.pubDate,
-      searchQuery: query,
-    };
+    return formatItem(
+      pickRandom(last24h)
+    );
 
   }
 
 
-  // ---------------------------
-  // 3. 최종 fallback
-  // ---------------------------
+  // ---------------------------------
+  // 3. 그냥 최신 목록 랜덤
+  // ---------------------------------
 
-  const pick = pickFrom(items);
+  return formatItem(
+    pickRandom(items)
+  );
 
-  return {
-    title: clean(pick.title),
-    link: pick.link,
-    pubDate: pick.pubDate,
-    searchQuery: query,
-  };
 }
 
 
-// --------------------------------------------------
+// ==================================================
 // 여러 검색어 순차 fallback
-// --------------------------------------------------
+// ==================================================
 
 async function fetchNaverNewsWithFallback(
   queries,
@@ -519,9 +603,14 @@ async function fetchNaverNewsWithFallback(
       : [queries];
 
 
-  for (const query of queryList) {
+  for (
+    const query
+    of queryList
+  ) {
 
-    if (!query) continue;
+    if (!query) {
+      continue;
+    }
 
 
     try {
@@ -546,6 +635,7 @@ async function fetchNaverNewsWithFallback(
           query,
           item.title
         );
+
 
         return item;
 
@@ -575,9 +665,401 @@ async function fetchNaverNewsWithFallback(
 }
 
 
-// --------------------------------------------------
-// OPENAI
-// --------------------------------------------------
+// ==================================================
+// 기사 대표 이미지 추출
+// ==================================================
+
+async function getArticleImage(
+  articleUrl,
+  timeoutMs = 1000
+) {
+
+  if (
+    !articleUrl ||
+    typeof articleUrl !== "string"
+  ) {
+
+    return null;
+
+  }
+
+
+  let parsedArticleUrl;
+
+
+  try {
+
+    parsedArticleUrl =
+      new URL(articleUrl);
+
+
+    if (
+      parsedArticleUrl.protocol !== "http:" &&
+      parsedArticleUrl.protocol !== "https:"
+    ) {
+
+      return null;
+
+    }
+
+  } catch {
+
+    return null;
+
+  }
+
+
+  const controller =
+    new AbortController();
+
+
+  const timer =
+    setTimeout(
+      () =>
+        controller.abort(),
+      timeoutMs
+    );
+
+
+  try {
+
+    const response =
+      await fetch(
+        articleUrl,
+        {
+
+          signal:
+            controller.signal,
+
+          redirect:
+            "follow",
+
+          headers: {
+
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome Safari",
+
+            Accept:
+              "text/html,application/xhtml+xml",
+
+          },
+
+        }
+      );
+
+
+    if (!response.ok) {
+
+      console.log(
+        "[ARTICLE_FETCH_FAIL]",
+        response.status,
+        articleUrl
+      );
+
+
+      return null;
+
+    }
+
+
+    const html =
+      await response
+        .text()
+        .catch(() => "");
+
+
+    if (!html) {
+      return null;
+    }
+
+
+    // ---------------------------------
+    // 이미지 URL 정리
+    // ---------------------------------
+
+    const normalizeImageUrl =
+      (rawUrl) => {
+
+        if (!rawUrl) {
+          return null;
+        }
+
+
+        let value =
+          decodeEntities(
+            String(rawUrl)
+              .trim()
+          );
+
+
+        // data:image 제외
+        if (
+          value.startsWith(
+            "data:"
+          )
+        ) {
+
+          return null;
+
+        }
+
+
+        try {
+
+          // 상대경로 이미지도 절대경로로 변환
+          const imageUrl =
+            new URL(
+              value,
+              articleUrl
+            );
+
+
+          if (
+            imageUrl.protocol !==
+              "http:" &&
+            imageUrl.protocol !==
+              "https:"
+          ) {
+
+            return null;
+
+          }
+
+
+          return imageUrl.href;
+
+
+        } catch {
+
+          return null;
+
+        }
+
+      };
+
+
+    // ---------------------------------
+    // 1. og:image
+    // ---------------------------------
+
+    const metaPatterns = [
+
+      /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i,
+
+      /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i,
+
+      /<meta[^>]+property=["']og:image:url["'][^>]+content=["']([^"']+)["']/i,
+
+      /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image:url["']/i,
+
+
+      // ---------------------------------
+      // 2. twitter:image
+      // ---------------------------------
+
+      /<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i,
+
+      /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image["']/i,
+
+      /<meta[^>]+name=["']twitter:image:src["'][^>]+content=["']([^"']+)["']/i,
+
+      /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image:src["']/i,
+
+    ];
+
+
+    for (
+      const pattern
+      of metaPatterns
+    ) {
+
+      const match =
+        html.match(pattern);
+
+
+      if (
+        match &&
+        match[1]
+      ) {
+
+        const imageUrl =
+          normalizeImageUrl(
+            match[1]
+          );
+
+
+        if (imageUrl) {
+
+          console.log(
+            "[ARTICLE_IMAGE_META]",
+            imageUrl
+          );
+
+
+          return imageUrl;
+
+        }
+
+      }
+
+    }
+
+
+    // ---------------------------------
+    // 3. 본문 img fallback
+    // ---------------------------------
+
+    // src / data-src / data-original 등
+    // 일반적인 lazy loading 방식도 찾는다.
+
+    const imgTagRegex =
+      /<img\b[^>]*>/gi;
+
+
+    const imgTags =
+      html.match(
+        imgTagRegex
+      ) || [];
+
+
+    for (
+      const tag
+      of imgTags
+    ) {
+
+      // 광고 / 로고 등으로 보이는 태그 제외
+      if (
+        /logo|icon|banner|advert|advertisement|sprite|avatar|profile|tracking|pixel/i.test(
+          tag
+        )
+      ) {
+
+        continue;
+
+      }
+
+
+      const attrPatterns = [
+
+        /\bsrc=["']([^"']+)["']/i,
+
+        /\bdata-src=["']([^"']+)["']/i,
+
+        /\bdata-original=["']([^"']+)["']/i,
+
+        /\bdata-lazy-src=["']([^"']+)["']/i,
+
+      ];
+
+
+      for (
+        const attrPattern
+        of attrPatterns
+      ) {
+
+        const match =
+          tag.match(
+            attrPattern
+          );
+
+
+        if (
+          !match ||
+          !match[1]
+        ) {
+
+          continue;
+
+        }
+
+
+        const candidate =
+          match[1];
+
+
+        // 작은 아이콘/광고 이미지로 보이는 URL 제외
+        if (
+          /logo|icon|banner|advert|sprite|avatar|profile|pixel|favicon/i.test(
+            candidate
+          )
+        ) {
+
+          continue;
+
+        }
+
+
+        const imageUrl =
+          normalizeImageUrl(
+            candidate
+          );
+
+
+        if (imageUrl) {
+
+          console.log(
+            "[ARTICLE_IMAGE_IMG]",
+            imageUrl
+          );
+
+
+          return imageUrl;
+
+        }
+
+      }
+
+    }
+
+
+    console.log(
+      "[ARTICLE_IMAGE_NONE]",
+      articleUrl
+    );
+
+
+    return null;
+
+
+  } catch (e) {
+
+    if (
+      String(e?.name) ===
+      "AbortError"
+    ) {
+
+      console.log(
+        "[ARTICLE_IMAGE_TIMEOUT]",
+        articleUrl
+      );
+
+
+      return null;
+
+    }
+
+
+    console.log(
+      "[ARTICLE_IMAGE_ERROR]",
+      String(e)
+    );
+
+
+    return null;
+
+
+  } finally {
+
+    clearTimeout(timer);
+
+  }
+
+}
+
+
+// ==================================================
+// OPENAI BASE
+// ==================================================
 
 function normalizeForCompare(s) {
 
@@ -607,9 +1089,14 @@ async function callOpenAI(
   if (!key) {
 
     return {
+
       ok: false,
+
       text: "",
-      why: "OPENAI_API_KEY 없음",
+
+      why:
+        "OPENAI_API_KEY 없음",
+
     };
 
   }
@@ -621,87 +1108,113 @@ async function callOpenAI(
 
   const timer =
     setTimeout(
-      () => controller.abort(),
+      () =>
+        controller.abort(),
       timeoutMs
     );
 
 
   try {
 
-    const r = await fetch(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        method: "POST",
+    const response =
+      await fetch(
+        "https://api.openai.com/v1/chat/completions",
+        {
 
-        signal:
-          controller.signal,
+          method:
+            "POST",
 
-        headers: {
+          signal:
+            controller.signal,
 
-          Authorization:
-            `Bearer ${key}`,
+          headers: {
 
-          "Content-Type":
-            "application/json",
-        },
+            Authorization:
+              `Bearer ${key}`,
 
-        body: JSON.stringify({
+            "Content-Type":
+              "application/json",
 
-          model:
-            "gpt-4o-mini",
+          },
 
-          temperature,
+          body:
+            JSON.stringify({
 
-          max_tokens,
+              model:
+                "gpt-4o-mini",
 
-          messages,
-        }),
-      }
-    );
+              temperature,
+
+              max_tokens,
+
+              messages,
+
+            }),
+
+        }
+      );
 
 
-    if (!r.ok) {
+    if (!response.ok) {
 
       const body =
-        await r.text().catch(() => "");
+        await response
+          .text()
+          .catch(() => "");
+
 
       return {
+
         ok: false,
+
         text: "",
+
         why:
-          `OpenAI ${r.status}: ${body.slice(0, 200)}`,
+          `OpenAI ${response.status}: ${body.slice(0, 200)}`,
+
       };
 
     }
 
 
-    const j =
-      await r.json().catch(() => ({}));
+    const data =
+      await response
+        .json()
+        .catch(() => ({}));
 
 
-    const out =
+    const output =
       clean(
-        j?.choices?.[0]?.message?.content ||
+        data?.choices?.[0]?.message?.content ||
         ""
       );
 
 
-    if (!out) {
+    if (!output) {
 
       return {
+
         ok: false,
+
         text: "",
+
         why:
           "OpenAI 응답 비었음",
+
       };
 
     }
 
 
     return {
+
       ok: true,
-      text: out,
+
+      text:
+        output,
+
       why: "",
+
     };
 
 
@@ -713,20 +1226,28 @@ async function callOpenAI(
     ) {
 
       return {
+
         ok: false,
+
         text: "",
+
         why:
           `OpenAI 타임아웃(${timeoutMs}ms)`,
+
       };
 
     }
 
 
     return {
+
       ok: false,
+
       text: "",
+
       why:
         `OpenAI 호출 오류: ${String(e).slice(0, 200)}`,
+
     };
 
 
@@ -739,14 +1260,14 @@ async function callOpenAI(
 }
 
 
-// --------------------------------------------------
+// ==================================================
 // GPT #1
-// 인명 치환 맵 생성
-// --------------------------------------------------
+// 인명 치환
+// ==================================================
 
 async function buildNameMap(title) {
 
-  const sys = `
+  const systemPrompt = `
 너는 한국어 뉴스 제목에서
 "사람 이름(인명)"만 찾아
 치환 맵을 만드는 도구야.
@@ -776,8 +1297,8 @@ async function buildNameMap(title) {
 박지우 -> 지우
 유진 -> 유진이
 
-- 직책이나 호칭이 붙은 형태도
-  함께 매핑한다.
+- 직책/호칭이 붙은 표현도
+  같은 사람이라면 함께 매핑한다.
 
 예:
 
@@ -785,10 +1306,7 @@ async function buildNameMap(title) {
 "문 전 대통령"
 "이 대표"
 
-등이 제목에 있으면
-같은 이름으로 치환한다.
-
-치환할 인물이 없으면:
+치환 대상이 없으면
 
 {}
 
@@ -803,36 +1321,56 @@ JSON 형식:
 `;
 
 
-  const r =
+  const result =
     await callOpenAI(
 
       [
+
         {
-          role: "system",
-          content: sys,
+          role:
+            "system",
+
+          content:
+            systemPrompt,
         },
 
         {
-          role: "user",
-          content: title,
+          role:
+            "user",
+
+          content:
+            title,
         },
+
       ],
 
       {
-        temperature: 0.2,
-        max_tokens: 260,
-        timeoutMs: 8000,
+
+        temperature:
+          0.2,
+
+        max_tokens:
+          260,
+
+        timeoutMs:
+          8000,
+
       }
 
     );
 
 
-  if (!r.ok) {
+  if (!result.ok) {
 
     return {
+
       ok: false,
+
       map: {},
-      why: r.why,
+
+      why:
+        result.why,
+
     };
 
   }
@@ -840,17 +1378,28 @@ JSON 형식:
 
   try {
 
-    // 가끔 ```json ... ``` 형태로 오는 경우 대비
+    // ```json 블록이 붙어도 처리
     const jsonText =
-      r.text
-        .replace(/^```json\s*/i, "")
-        .replace(/^```\s*/i, "")
-        .replace(/```$/i, "")
+      result.text
+        .replace(
+          /^```json\s*/i,
+          ""
+        )
+        .replace(
+          /^```\s*/i,
+          ""
+        )
+        .replace(
+          /```$/i,
+          ""
+        )
         .trim();
 
 
     const obj =
-      JSON.parse(jsonText);
+      JSON.parse(
+        jsonText
+      );
 
 
     if (
@@ -860,10 +1409,14 @@ JSON 형식:
     ) {
 
       return {
+
         ok: false,
+
         map: {},
+
         why:
           "인명맵 JSON 형식이 아님",
+
       };
 
     }
@@ -873,19 +1426,21 @@ JSON 형식:
 
 
     for (
-      const [k, v]
+      const [key, value]
       of Object.entries(obj)
     ) {
 
       if (
-        typeof k === "string" &&
-        typeof v === "string" &&
-        k.trim() &&
-        v.trim()
+        typeof key === "string" &&
+        typeof value === "string" &&
+        key.trim() &&
+        value.trim()
       ) {
 
-        map[k.trim()] =
-          v.trim();
+        map[
+          key.trim()
+        ] =
+          value.trim();
 
       }
 
@@ -893,19 +1448,27 @@ JSON 형식:
 
 
     return {
+
       ok: true,
+
       map,
+
       why: "",
+
     };
 
 
   } catch (e) {
 
     return {
+
       ok: false,
+
       map: {},
+
       why:
         `인명맵 JSON 파싱 실패: ${String(e).slice(0, 120)}`,
+
     };
 
   }
@@ -913,21 +1476,20 @@ JSON 형식:
 }
 
 
-// --------------------------------------------------
+// ==================================================
 // GPT #2
-// 뉴스일꼬 말투
-// --------------------------------------------------
+// 뉴스일꼬 말투 변환
+// ==================================================
 
 async function toNewsilkoStyle(
   titleAfterReplace
 ) {
 
-  const sys = `
-너는 "뉴스일꼬"라는
-츤데레 고양이야 🐱
+  const systemPrompt = `
+너는 "뉴스일꼬"라는 츤데레 고양이야 🐱
 
-입력은 뉴스 제목이고
-이미 인명 치환이 완료된 상태야.
+입력은 뉴스 제목이고,
+인명 치환은 이미 완료된 상태야.
 
 출력은 친구에게 카톡 보내듯
 귀엽고 자연스러운 한국어 구어체
@@ -936,47 +1498,51 @@ async function toNewsilkoStyle(
 말투 규칙:
 
 - 존댓말 금지
-- "합니다", "됩니다" 같은 말투 금지
-
-- 딱딱한 뉴스체 금지
-
-- 기자, 매체 등
-  불필요한 뉴스 문체는 빼기
-
-- "~했다"보다
-  "~했대", "~라네", "~래"
-  같은 자연스러운 말투 사용
-
-- 너무 과장하지 말 것
-
+- "합니다", "됩니다" 같은 뉴스체 금지
+- 딱딱한 보도문 문체 금지
+- 제목을 그대로 베끼지 말 것
+- 친구한테 설명해주는 것처럼 풀어쓰기
+- "~했다"보다 "~했대", "~라네", "~래" 같은 표현 사용 가능
+- 너무 과장하거나 유치하게 만들지 말 것
+- 정보의 핵심은 유지할 것
 - 약 40~95자
-
-- 뉴스 제목을 그대로 복사하지 말고
-  친구에게 설명하듯 풀어쓸 것
-
-- 이미 치환된 사람 이름을
-  다시 원래 성명으로 복구하면 안 됨
+- 이미 치환된 사람 이름을 다시 원래 성명으로 복구하지 말 것
 `;
 
 
   return await callOpenAI(
 
     [
+
       {
-        role: "system",
-        content: sys,
+        role:
+          "system",
+
+        content:
+          systemPrompt,
       },
 
       {
-        role: "user",
-        content: titleAfterReplace,
+        role:
+          "user",
+
+        content:
+          titleAfterReplace,
       },
+
     ],
 
     {
-      temperature: 0.95,
-      max_tokens: 170,
-      timeoutMs: 8000,
+
+      temperature:
+        0.95,
+
+      max_tokens:
+        170,
+
+      timeoutMs:
+        8000,
+
     }
 
   );
@@ -984,27 +1550,31 @@ async function toNewsilkoStyle(
 }
 
 
-// --------------------------------------------------
-// 뉴스일꼬 문장 생성
-// --------------------------------------------------
+// ==================================================
+// 뉴스일꼬 문장 만들기
+// ==================================================
 
 async function makeCasual(title) {
 
-  // 1단계: 인명
-  const nm =
-    await buildNameMap(title);
+  // 1. 인명 변환
+  const nameMap =
+    await buildNameMap(
+      title
+    );
 
 
   const replacedTitle =
-    nm.ok
+    nameMap.ok
+
       ? applyReplacements(
           title,
-          nm.map
+          nameMap.map
         )
+
       : title;
 
 
-  // 2단계: 말투
+  // 2. 뉴스일꼬 말투
   const styled =
     await toNewsilkoStyle(
       replacedTitle
@@ -1014,12 +1584,22 @@ async function makeCasual(title) {
   if (!styled.ok) {
 
     return {
+
       ok: false,
+
       text: "",
-      why: styled.why,
+
+      why:
+        styled.why,
+
       replacedTitle,
-      nameMapOk: nm.ok,
-      nameMapWhy: nm.why,
+
+      nameMapOk:
+        nameMap.ok,
+
+      nameMapWhy:
+        nameMap.why,
+
     };
 
   }
@@ -1047,37 +1627,47 @@ async function makeCasual(title) {
     );
 
 
-  // 예전에는 비슷하면 GPT를 한 번 더 호출했지만
-  // 응답 지연 방지를 위해 추가 호출하지 않는다.
-  //
-  // 그래도 GPT가 만든 문장은 그대로 사용.
-  //
   if (tooSimilar) {
 
     console.log(
       "[STYLE_SIMILAR]",
-      replacedTitle,
-      styled.text
+      {
+        original:
+          replacedTitle,
+
+        result:
+          styled.text,
+      }
     );
 
   }
 
 
   return {
+
     ok: true,
-    text: styled.text,
+
+    text:
+      styled.text,
+
     why: "",
+
     replacedTitle,
-    nameMapOk: nm.ok,
-    nameMapWhy: nm.why,
+
+    nameMapOk:
+      nameMap.ok,
+
+    nameMapWhy:
+      nameMap.why,
+
   };
 
 }
 
 
-// --------------------------------------------------
+// ==================================================
 // KAKAO
-// --------------------------------------------------
+// ==================================================
 
 function tsunTitle() {
 
@@ -1108,7 +1698,7 @@ function tsunTitle() {
 
 function tsunDesc() {
 
-  const descs = [
+  const descriptions = [
 
     "…흥.",
 
@@ -1121,10 +1711,10 @@ function tsunDesc() {
   ];
 
 
-  return descs[
+  return descriptions[
     Math.floor(
       Math.random() *
-      descs.length
+      descriptions.length
     )
   ];
 
@@ -1133,10 +1723,14 @@ function tsunDesc() {
 
 function quickReplies() {
 
-  const mk =
-    (label, messageText) => ({
+  const make =
+    (
+      label,
+      messageText
+    ) => ({
 
-      action: "message",
+      action:
+        "message",
 
       label,
 
@@ -1147,42 +1741,42 @@ function quickReplies() {
 
   return [
 
-    mk(
+    make(
       "오늘 뉴스",
       "뉴스"
     ),
 
-    mk(
+    make(
       "경제",
       "경제"
     ),
 
-    mk(
+    make(
       "사회",
       "사회"
     ),
 
-    mk(
+    make(
       "정치",
       "정치"
     ),
 
-    mk(
+    make(
       "국제",
       "국제"
     ),
 
-    mk(
+    make(
       "과학",
       "과학"
     ),
 
-    mk(
+    make(
       "연예",
       "연예"
     ),
 
-    mk(
+    make(
       "스포츠",
       "스포츠"
     ),
@@ -1205,7 +1799,8 @@ function kakaoCard(
 
   return {
 
-    version: "2.0",
+    version:
+      "2.0",
 
     template: {
 
@@ -1213,7 +1808,9 @@ function kakaoCard(
 
         {
           simpleText: {
+
             text,
+
           },
         },
 
@@ -1249,6 +1846,7 @@ function kakaoCard(
             buttons: [
 
               {
+
                 action:
                   "webLink",
 
@@ -1257,6 +1855,7 @@ function kakaoCard(
 
                 webLinkUrl:
                   link,
+
               },
 
             ],
@@ -1281,16 +1880,22 @@ function kakaoText(msg) {
 
   return {
 
-    version: "2.0",
+    version:
+      "2.0",
 
     template: {
 
       outputs: [
 
         {
+
           simpleText: {
-            text: msg,
+
+            text:
+              msg,
+
           },
+
         },
 
       ],
@@ -1306,9 +1911,9 @@ function kakaoText(msg) {
 }
 
 
-// --------------------------------------------------
+// ==================================================
 // HANDLER
-// --------------------------------------------------
+// ==================================================
 
 export default async function handler(
   req,
@@ -1317,13 +1922,17 @@ export default async function handler(
 
   try {
 
-    const utter =
+    // ---------------------------------
+    // 사용자 입력
+    // ---------------------------------
+
+    const utterance =
       getUtterance(req);
 
 
     console.log(
       "[USER_INPUT]",
-      utter
+      utterance
     );
 
 
@@ -1333,7 +1942,7 @@ export default async function handler(
       mode,
     } =
       buildQueryFromUtterance(
-        utter
+        utterance
       );
 
 
@@ -1344,8 +1953,10 @@ export default async function handler(
     );
 
 
-    // 여러 검색어 중
-    // 실제 기사 잡히는 검색어까지 진행
+    // ---------------------------------
+    // 뉴스 검색
+    // ---------------------------------
+
     const item =
       await fetchNaverNewsWithFallback(
         queries,
@@ -1378,36 +1989,82 @@ export default async function handler(
     console.log(
       "[ARTICLE_SELECTED]",
       {
+
         topic,
+
         query:
           item.searchQuery,
+
         title:
           item.title,
+
+        link:
+          item.link,
+
       }
     );
 
 
-    // 기사 이미지 fetch 없음.
-    // 바로 GPT 실행
-    const g =
-      await makeCasual(
+    // ---------------------------------
+    // 기사 이미지 + GPT 동시에 실행
+    // ---------------------------------
+
+    const imagePromise =
+      getArticleImage(
+        item.link,
+        1000
+      );
+
+
+    const gptPromise =
+      makeCasual(
         item.title
       );
 
 
-    // GPT 실패하더라도
-    // 챗봇 자체는 반드시 답변
-    if (!g?.ok) {
+    const [
+      articleImage,
+      gptResult,
+    ] =
+      await Promise.all([
+        imagePromise,
+        gptPromise,
+      ]);
+
+
+    // 기사 이미지를 찾으면 기사 사진
+    // 못 찾으면 뉴스일꼬 기본 이미지
+    const thumbUrl =
+      articleImage ||
+      THUMBNAIL_URL;
+
+
+    console.log(
+      "[THUMBNAIL_SELECTED]",
+      articleImage
+        ? "ARTICLE_IMAGE"
+        : "DEFAULT_IMAGE",
+      thumbUrl
+    );
+
+
+    // ---------------------------------
+    // GPT 실패
+    // ---------------------------------
+
+    if (!gptResult?.ok) {
 
       console.error(
         "[OPENAI_FAIL]",
-        g?.why,
+        gptResult?.why,
         {
+
           nameMapOk:
-            g?.nameMapOk,
+            gptResult?.nameMapOk,
 
           nameMapWhy:
-            g?.nameMapWhy,
+            gptResult?.nameMapWhy,
+
         }
       );
 
@@ -1422,7 +2079,7 @@ export default async function handler(
 
             item.link,
 
-            THUMBNAIL_URL
+            thumbUrl
 
           )
 
@@ -1431,18 +2088,21 @@ export default async function handler(
     }
 
 
+    // ---------------------------------
     // 정상 응답
+    // ---------------------------------
+
     return res
       .status(200)
       .json(
 
         kakaoCard(
 
-          g.text,
+          gptResult.text,
 
           item.link,
 
-          THUMBNAIL_URL
+          thumbUrl
 
         )
 
